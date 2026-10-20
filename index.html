@@ -247,6 +247,7 @@ input[type=range]{flex:1;min-width:60px;accent-color:var(--accent)}
 .keys dt{font-family:var(--f-mono);font-size:11px;color:var(--ink);background:var(--raise);border:1px solid var(--line);border-radius:4px;padding:1px 5px;justify-self:start;white-space:nowrap}
 .keys dd{margin:0;color:var(--muted)}
 .muted{color:var(--muted)}
+.tip a,.libNote a{color:var(--accent)}
 .tip{font-size:12px;color:var(--muted);line-height:1.45;margin:0}
 
 .modal{position:fixed;inset:0;z-index:40;background:rgba(10,14,22,.45);display:grid;place-items:center;padding:16px}
@@ -1394,7 +1395,7 @@ function canvasPanel(){
     +sec('Grid',`<label class="chk"><input type="checkbox" id="f-canvas-grid" ${A('canvas','grid')}>Show grid</label><label class="chk"><input type="checkbox" id="f-canvas-snap" ${A('canvas','snap')}>Snap to grid</label>`+rangeF('Grid size','canvas','gridSize',5,80,5)))
   +pane('canvas','presets',presetSec(false)+edgePresetSec(false))
   +pane('canvas','help',sec('How to',`<p class="tip">Click a shape on the left to add it, or drag it onto the canvas. Hover a shape and drag one of its blue dots to draw an arrow. Drop the arrow on a dot or along an edge to pin it there, or anywhere inside a shape to let it pick the nearest side. Arrows have dots too: drop an arrow on another arrow to join it there (it stays joined when things move or get cleaned up), or drag from an arrow's dot to branch off it. Double-click an arrow to give it a label such as Yes or No.</p>`)
-  +sec('Tour','<p class="tip">A one-minute walk through every feature.</p><div class="acts"><button class="btn outline" data-act="tour">Show the tour</button></div>')
+  +sec('Tour','<p class="tip">A one-minute walk through every feature.</p><div class="acts"><button class="btn outline" data-act="tour">Show the tour</button></div>')+sec('About','<p class="tip">Linework is free. Signing in with Google saves your charts online, privately. See the <a href="privacy.html" target="_blank">privacy policy</a>.</p>')
   +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Esc / Ctrl+Enter</dt><dd>Finish editing</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste, duplicate</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
 }
 function renderInspector(){
@@ -1857,7 +1858,7 @@ function closeLib(){libM.hidden=true;if(lib)lib.renaming=null}
 function libRender(){if(libM.hidden)return;
   const st=lib?lib.state:'wait';let h='';
   if(st==='wait')h=`<p class="libNote">Connecting to your account…</p>`;
-  else if(st==='off'||st==='ro')h=`<p class="libNote warn"><b>Sign in to use My charts.</b> ${st==='off'?'Sign in with Google to save diagrams online and reach them from any device. <button class="btn primary" data-lib="signin">Sign in with Google</button><br>':'Your account can view this page but can’t save to it. People who open it from a shared link only get view access. Ask the owner to invite you by email as an editor.'} You can still use <b>Save</b> and <b>Open</b> to keep diagrams as files, and this browser keeps your current diagram.</p>`;
+  else if(st==='off'||st==='ro')h=`<p class="libNote warn"><b>Sign in to use My charts.</b> ${st==='off'?'Sign in with Google to save diagrams online and reach them from any device. <button class="btn primary" data-lib="signin">Sign in with Google</button> <a href="privacy.html" target="_blank">Privacy policy</a><br>':'Your account can view this page but can’t save to it. People who open it from a shared link only get view access. Ask the owner to invite you by email as an editor.'} You can still use <b>Save</b> and <b>Open</b> to keep diagrams as files, and this browser keeps your current diagram.</p>`;
   if(st==='ok'){
     const id=curChart(),r=id&&lib.items.get(id);
     h+=r?`<div class="libCur">Open now: <b>${esc(r.name)}</b><span class="muted">${esc(lib.status||'✓ Saved')} · changes save automatically</span></div>`
@@ -1869,7 +1870,7 @@ function libRender(){if(libM.hidden)return;
       <div class="libActs"><button class="btn" data-lib="open" data-id="${cid}"${cid===id?' disabled':''}>Open</button><button class="btn" data-lib="ren" data-id="${cid}">Rename</button><button class="btn" data-lib="dup" data-id="${cid}">Duplicate</button><button class="btn danger" data-lib="del" data-id="${cid}">Delete</button></div></div>`).join('')}</div>`
       :`<p class="libEmpty">No charts yet. Save the diagram you’re working on to start your collection.</p>`;
     h+=`<div class="libFoot"><button class="btn outline" data-lib="backup"${list.length?'':' disabled'}>Download backup</button><button class="btn outline" data-lib="restore">Restore from backup</button>
-      <p class="tip">Charts are private to your account. Download a backup now and then.</p></div>`}
+      <p class="tip">Charts are private to your account. Download a backup now and then. <a href="privacy.html" target="_blank">Privacy policy</a></p></div>`}
   libB.innerHTML=h;const r=$('#libRen');if(r){r.focus();r.select()}}
 async function libRename(id,name){const c=lib.items.get(id);lib.renaming=null;name=(name||'').trim().slice(0,80);
   if(!c||!name||name===c.name){libRender();return}c.name=name;libRender();updLibBtn();try{await lib.col.doc(id).update({name})}catch(e){libFail(e)}}
