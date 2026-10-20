@@ -309,7 +309,8 @@ input[type=range]{flex:1;min-width:60px;accent-color:var(--accent)}
     <div class="grp">
       <button class="btn" id="bNew" title="New blank diagram"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/></svg><span class="lbl-wide">New</span></button>
       <button class="btn" id="bOpen" title="Open a saved .json diagram"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg><span class="lbl-wide">Open</span></button>
-      <button class="btn" id="bSave" title="Save the diagram as editable .json"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span class="lbl-wide">Save</span></button>
+      <button class="btn" id="bSave" title="Save to My charts (Ctrl+S)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11l3 3v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/></svg><span class="lbl-wide">Save</span></button>
+      <button class="btn" id="bSaveAs" title="Save as a .json file you can download (Ctrl+Shift+S)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span class="lbl-wide">Save as</span></button>
       <button class="btn" id="bLib" title="My charts: diagrams saved to your account"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.2"/><rect x="14" y="4" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><path d="M14 17.5h7M17.5 14v7"/></svg><span class="lbl-wide" id="libLbl">My charts</span></button>
       <input type="file" id="fileIn" accept=".json,application/json" hidden>
     </div>
@@ -853,7 +854,7 @@ function redo(){flush();if(!redoS.length)return;undoS.push(lastSnap);lastSnap=re
 let saveT=0;function saveLocal(){clearTimeout(saveT);saveT=setTimeout(()=>{try{localStorage.setItem('linework.v1',JSON.stringify({doc,view}))}catch(_){}} ,300);libPush()}
 function normalize(d){
   const D=baseDefaults();d=d||{};d.nodes=Array.isArray(d.nodes)?d.nodes:[];d.edges=Array.isArray(d.edges)?d.edges:[];
-  d.canvas=Object.assign({bg:'#FFFFFF',bgOpacity:1,grid:true,snap:true,gridSize:20},d.canvas||{});
+  d.canvas=Object.assign({bg:'#FFFFFF',bgOpacity:1,grid:true,snap:true,gridSize:20,mode:'flow',sHeads:'none',sRoute:'orthogonal',sDir:'tb'},d.canvas||{});
   d.defaults=d.defaults||{};d.defaults.node=Object.assign(D.node,d.defaults.node||{});d.defaults.edge=Object.assign(D.edge,d.defaults.edge||{});d.defaults.label=Object.assign(D.label,d.defaults.label||{});
   d.nodes=d.nodes.filter(n=>n&&SHAPES[n.type]);
   for(const n of d.nodes){n.style=Object.assign(clone(D.node),SHAPES[n.type].style||{},n.style||{});n.text=n.text??'';n.tx=+n.tx||0;n.ty=+n.ty||0;n.w=+n.w||100;n.h=+n.h||60;n.x=+n.x||0;n.y=+n.y||0}
@@ -886,6 +887,7 @@ function sampleDoc(){
 /* ---------- node / edge operations ---------- */
 const snapOn=()=>doc.canvas.snap;
 const gsz=()=>doc.canvas.gridSize;
+const structure=()=>doc.canvas.mode==='structure';
 const snapV=v=>Math.round(v/gsz())*gsz();
 function addNode(type,cx,cy,edit){
   /* the last look given to this type wins, then a preset claimed for the type, then the default style.
@@ -902,6 +904,7 @@ function addNode(type,cx,cy,edit){
 function newEdge(from,to){const D=doc.defaults,M=D.edgeMem,p=M&&epresets.find(q=>q.id===M.preset),b=edgeBase();
   if(p){Object.assign(b.style,clone(p.style));Object.assign(b.label,clone(p.label))}
   if(M){Object.assign(b.style,clone(M.style));Object.assign(b.label,clone(M.label))}
+  if(structure()){b.style.endHead=doc.canvas.sHeads==='arrow'?'arrow':'none';b.style.route=doc.canvas.sRoute}
   const e={id:uid('e'),from,to,style:b.style,label:{text:'',t:.5,dx:0,dy:0,style:b.label}};
   const link=M?p?.id:D.edgePreset;if(link&&epresets.some(q=>q.id===link))e.preset=link;return e}
 function deleteSel(){
@@ -914,7 +917,7 @@ function deleteSel(){
 }
 /* ends sitting on an arrow that is going away (or not coming along) become loose ends where they are now */
 function detach(es,gone){for(const e of es)for(const k of ['from','to'])if(e[k].edge&&gone.has(e[k].edge)){const g=geom.get(e.id)||edgeGeom(e),p=k==='from'?g.pts[0]:g.pts[g.pts.length-1];e[k]={x:p.x,y:p.y}}}
-let clip=null,styleClip={node:null,edge:null};
+let clip=null,styleClip={node:null,edge:null},ptrW=null,ptrIn=false,pasteSpot=null,pasteN=0;
 function copySel(){const ns=selNodes();const ids=new Set(ns.map(n=>n.id));
   const es=doc.edges.filter(e=>(sel.has(e.id)||(e.from.node&&e.to.node))&&(!e.from.node||ids.has(e.from.node))&&(!e.to.node||ids.has(e.to.node))&&(sel.has(e.id)||ids.has(e.from.node)));
   /* arrows joined to copied arrows come along too */
@@ -924,6 +927,10 @@ function copySel(){const ns=selNodes();const ids=new Set(ns.map(n=>n.id));
   detach(clip.edges,new Set(clip.edges.flatMap(e=>[e.from.edge,e.to.edge]).filter(id=>id&&!eid.has(id))));return true}
 function pasteEdges(list,dx,dy,map,ids){const es=clone(list),em={};for(const e of es)em[e.id]=uid('e');
   for(const e of es){e.id=em[e.id];for(const k of ['from','to']){const q=e[k];if(q.node)q.node=map[q.node];else{if(q.edge)q.edge=em[q.edge];q.x+=dx;q.y+=dy}}doc.edges.push(e);ids.push(e.id)}}
+/* Ctrl+V: centred on the pointer when it's over the canvas; pasting again without moving steps down-right */
+function pasteHere(){if(!clip)return;if(!ptrIn||!ptrW){paste();return}
+  const same=pasteSpot&&Math.hypot(pasteSpot.x-ptrW.x,pasteSpot.y-ptrW.y)<.5;pasteN=same?pasteN+1:0;pasteSpot={x:ptrW.x,y:ptrW.y};
+  pasteAt({x:ptrW.x+pasteN*gsz(),y:ptrW.y+pasteN*gsz()})}
 /* paste centred on a canvas point (right-click → Paste here) */
 function pasteAt(p){if(!clip)return;let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;const add=(x,y)=>{x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y)};
   for(const n of clip.nodes){add(n.x,n.y);add(n.x+n.w,n.y+n.h)}for(const e of clip.edges)for(const k of ['from','to'])if(!e[k].node)add(e[k].x,e[k].y);
@@ -938,6 +945,41 @@ function paste(off=24){if(!clip)return;const map={};const ids=[];
   clip=clone({nodes:clip.nodes.map(n=>({...n,x:n.x+off,y:n.y+off})),edges:clip.edges.map(e=>{const c=clone(e);for(const k of ['from','to'])if(!c[k].node){c[k].x+=off;c[k].y+=off}return c})});
   setSel(ids);commit();render()}
 function fitText(n){for(let i=0;i<3;i++){const L=nodeText(n),ins=insets(n);n.h=Math.max(24,Math.ceil(L.H+ins.t+ins.b+2*n.style.padding+2))}}
+
+/* ---------- structure diagrams ---------- */
+/* a new box below (or right of) a shape, after its existing children, joined to it and ready to type in */
+function addChild(par){const lr=doc.canvas.sDir==='lr',G=gsz();
+  const kids=doc.edges.filter(e=>e.from.node===par.id&&e.to.node&&e.to.node!==par.id).map(e=>nodeById(e.to.node)).filter(Boolean);
+  const n={id:uid('n'),type:par.type,x:par.x,y:par.y,w:par.w,h:par.h,text:'',style:clone(par.style),tx:0,ty:0};if(par.preset)n.preset=par.preset;
+  if(lr){n.x=par.x+par.w+G*4;if(kids.length)n.y=Math.max(...kids.map(c=>c.y+c.h))+G*2}
+  else{n.y=par.y+par.h+G*4;if(kids.length)n.x=Math.max(...kids.map(c=>c.x+c.w))+G*2}
+  doc.nodes.push(n);doc.edges.push(newEdge({node:par.id,side:lr?'right':'bottom',t:.5},{node:n.id,side:lr?'left':'top',t:.5}));
+  setSel([n.id]);commit();render();startEdit('node',n.id,true);return n}
+/* tidy tree layout: each shape centred over its children, levels evenly spaced; the first root stays put */
+function arrangeTree(){const lr=doc.canvas.sDir==='lr',G=gsz(),gapS=G*2,gapL=G*4,N=id=>nodeById(id);
+  const kids=new Map(),par=new Map();
+  for(const e of doc.edges){const a=e.from.node,b=e.to.node;if(!a||!b||a===b||par.has(b)||!N(a)||!N(b))continue;par.set(b,a);if(!kids.has(a))kids.set(a,[]);kids.get(a).push(b)}
+  for(const b of [...par.keys()]){const seen=new Set([b]);for(let x=par.get(b);x!=null;x=par.get(x)){if(seen.has(x)){const l=kids.get(par.get(b));l.splice(l.indexOf(b),1);par.delete(b);break}seen.add(x)}}
+  const A=n=>lr?n.h:n.w,B=n=>lr?n.w:n.h,pos=n=>lr?n.y:n.x;
+  for(const l of kids.values())l.sort((a,b)=>pos(N(a))-pos(N(b)));
+  const roots=doc.nodes.filter(n=>!par.has(n.id)&&kids.get(n.id)?.length).sort((a,b)=>pos(a)-pos(b));
+  if(!roots.length){toast('Nothing to arrange yet. Connect a shape to the boxes under it first (select it and press Tab).');return}
+  const span=new Map(),sp=id=>{if(!span.has(id)){const c=kids.get(id)||[];span.set(id,Math.max(A(N(id)),c.reduce((t,k)=>t+sp(k),0)+gapS*Math.max(0,c.length-1)))}return span.get(id)};
+  const depth=new Map(),lvl=[],walk=(id,d)=>{depth.set(id,d);lvl[d]=Math.max(lvl[d]||0,B(N(id)));for(const k of kids.get(id)||[])walk(k,d+1)};
+  for(const r of roots)walk(r.id,0);
+  const off=[0];for(let i=1;i<lvl.length;i++)off[i]=off[i-1]+lvl[i-1]+gapL;
+  const r0=roots[0],baseB=(lr?r0.x:r0.y)-(lvl[0]-B(r0))/2;
+  const place=(id,start)=>{const n=N(id),s=sp(id),c=kids.get(id)||[],d=depth.get(id),mid=start+s/2;
+    const a=Math.round(mid-A(n)/2),b=Math.round(baseB+off[d]+(lvl[d]-B(n))/2);if(lr){n.y=a;n.x=b}else{n.x=a;n.y=b}
+    let s0=mid-(c.reduce((t,k)=>t+sp(k),0)+gapS*Math.max(0,c.length-1))/2;for(const k of c){place(k,s0);s0+=sp(k)+gapS}};
+  let at=pos(r0)+A(r0)/2-sp(r0.id)/2;for(const r of roots){place(r.id,at);at+=sp(r.id)+gapS*2}
+  for(const e of doc.edges)if(e.from.node&&e.to.node&&par.get(e.to.node)===e.from.node){e.from={node:e.from.node,side:lr?'right':'bottom',t:.5};e.to={node:e.to.node,side:lr?'left':'top',t:.5}}
+  commit();fit();toast('Arranged as a tree. Press Ctrl+Z to undo.')}
+/* the diagram type's connector look, applied to every arrow when it changes */
+function structApply(p){const c=doc.canvas;
+  if(c.mode==='structure')for(const e of doc.edges){e.style.endHead=c.sHeads==='arrow'?'arrow':'none';e.style.route=c.sRoute}
+  else if(p==='mode')for(const e of doc.edges)if(e.style.endHead==='none'&&e.style.startHead==='none')e.style.endHead='arrow';
+  if(p==='mode')renderInspector()}
 
 /* ---------- selection ---------- */
 let inspSig='';
@@ -967,7 +1009,7 @@ function placeEditor(){
     if(st.autoSize){by=n.y+L.box.y;bh=Math.max(L.box.h,L.H);pt=Math.max(0,L.y0-L.box.y)}}
   else{const e=edgeById(editing.id);const g=geom.get(editing.id);if(!e||!g||!g.label){return}const lb=g.label;st=lb.st;L=lb.L;bw=Math.max(lb.W,60);bx=lb.cx-bw/2;by=lb.y+3;bh=L.H;ta.style.background=st.bgOpacity>0?st.bg:'transparent'}
   Object.assign(ta.style,{left:(view.x+bx*z)+'px',top:(view.y+by*z)+'px',width:(bw*z+2)+'px',height:(bh*z+2)+'px',paddingTop:(pt*z)+'px',font:`${st.italic?'italic ':''}${st.bold?700:400} ${L.fs*z}px ${famCSS(st.fontFamily)}`,lineHeight:(L.lh*z)+'px',color:st.color,textAlign:editing.kind==='label'?'center':st.align,textDecoration:st.underline?'underline':'none'});
-  const tip=$('#editTip');tip.hidden=false;tip.textContent=editing.kind==='label'?'Editing label · Enter to finish · Shift+Enter for a new line':'Editing text · Esc or click away to finish';
+  const tip=$('#editTip');tip.hidden=false;tip.textContent=(editing.kind==='label'?'Editing label':'Editing text')+' · Enter to finish · Shift+Enter for a new line';
   tip.style.left=(view.x+(bx+bw/2)*z)+'px';tip.style.top=(view.y+(ty??by+bh)*z+8)+'px';
 }
 function endEdit(){
@@ -977,7 +1019,7 @@ function endEdit(){
   commit();onSel(true);
 }
 ta.addEventListener('input',()=>{if(!editing)return;if(editing.kind==='node'){const n=nodeById(editing.id);if(n)n.text=ta.value}else{const e=edgeById(editing.id);if(e)e.label.text=ta.value}draw();syncInspector()});
-ta.addEventListener('keydown',ev=>{ev.stopPropagation();if(ev.key==='Escape'||(ev.key==='Enter'&&(ev.ctrlKey||ev.metaKey))||(ev.key==='Enter'&&!ev.shiftKey&&editing&&editing.kind==='label')){ev.preventDefault();endEdit()}});
+ta.addEventListener('keydown',ev=>{ev.stopPropagation();if(ev.key==='Escape'||(ev.key==='Enter'&&!ev.shiftKey&&!ev.isComposing)){ev.preventDefault();endEdit()}});
 ta.addEventListener('blur',()=>setTimeout(()=>{if(editing&&document.activeElement!==ta)endEdit()},0));
 
 /* ---------- pointer interaction ---------- */
@@ -1044,6 +1086,9 @@ svg.addEventListener('pointerdown',ev=>{
   if(portEl){const id=portEl.dataset.port,side=portEl.dataset.side;tmpEdge=newEdge({node:id,side,t:.5},{x:p.x,y:p.y});tmpEdge.id='__tmp';drag={kind:'newEdge',p0:p,moved:false};render();return}
   if(eportEl){const id=eportEl.dataset.eport,t=+eportEl.dataset.t,h=edgeById(id),g=geom.get(id);if(h&&g){const c=pointAt(g.pts,t);
     tmpEdge=newEdge({edge:id,t,x:c.x,y:c.y},{x:p.x,y:p.y});tmpEdge.id='__tmp';drag={kind:'newEdge',p0:p,moved:false,skip:skipFor(id)};render();return}}
+  /* structure diagrams: a selected arrow's end sitting on a shape keeps that spot drawing new branches (Alt+drag moves the end instead) */
+  if(endEl&&structure()&&!ev.altKey){const q=edgeById(endEl.dataset.endpoint)?.[endEl.dataset.which];
+    if(q&&q.node){tmpEdge=newEdge(clone(q),{x:p.x,y:p.y});tmpEdge.id='__tmp';drag={kind:'newEdge',p0:p,moved:false};render();return}}
   if(endEl){const e=edgeById(endEl.dataset.endpoint);drag={kind:'endpoint',id:e.id,which:endEl.dataset.which,moved:false};return}
   if(labEl){const id=labEl.dataset.label;if(!sel.has(id)||!ev.shiftKey)setSel(ev.shiftKey?[...sel,id]:[id]);drag={kind:'label',id,p0:p,moved:false};return}
   if(edgeEl){const id=edgeEl.dataset.edge;if(ev.shiftKey){sel.has(id)?sel.delete(id):sel.add(id);onSel()}else if(!sel.has(id))setSel([id]);startMove(p,null);return}
@@ -1066,6 +1111,7 @@ function startPinch(){
   if(tmpEdge)tmpEdge=null;marquee=null;guides=[];snapHint=null;
 }
 svg.addEventListener('pointermove',ev=>{
+  ptrW=toWorld(ev);ptrIn=true;
   if(ev.pointerType==='touch'&&touches.has(ev.pointerId))touches.set(ev.pointerId,{x:ev.clientX,y:ev.clientY});
   if(lp.t&&Math.hypot(ev.clientX-lp.x,ev.clientY-lp.y)>10){clearTimeout(lp.t);lp.t=0}
   const p=toWorld(ev);
@@ -1129,6 +1175,7 @@ function endPointer(ev){
   else commit();
   guides=[];snapHint=null;nearE=null;onSel();render();
 }
+svg.addEventListener('pointerleave',()=>{ptrIn=false});
 svg.addEventListener('pointerup',endPointer);svg.addEventListener('pointercancel',endPointer);
 svg.addEventListener('contextmenu',ev=>ev.preventDefault());
 svg.addEventListener('wheel',ev=>{ev.preventDefault();const k=ev.deltaMode===1?16:1;const r=svg.getBoundingClientRect();
@@ -1164,7 +1211,8 @@ window.addEventListener('keydown',ev=>{
   if(mod&&k.toLowerCase()==='y'){ev.preventDefault();redo();return}
   if(mod&&k.toLowerCase()==='c'){if(copySel())toast('Copied');ev.preventDefault();return}
   if(mod&&k.toLowerCase()==='x'){if(copySel())deleteSel();ev.preventDefault();return}
-  if(mod&&k.toLowerCase()==='v'){paste();ev.preventDefault();return}
+  if(mod&&k.toLowerCase()==='v'){pasteHere();ev.preventDefault();return}
+  if(mod&&k.toLowerCase()==='s'){ev.preventDefault();ev.shiftKey?saveAs():saveMain();return}
   if(mod&&k.toLowerCase()==='d'){ev.preventDefault();if(copySel())paste(gsz());return}
   if(mod&&k.toLowerCase()==='a'){ev.preventDefault();setSel([...doc.nodes.map(n=>n.id),...doc.edges.map(e=>e.id)]);return}
   if(mod&&k==='0'){ev.preventDefault();const r=svg.getBoundingClientRect();zoomAt(r.width/2,r.height/2,1/view.z);return}
@@ -1176,6 +1224,7 @@ window.addEventListener('keydown',ev=>{
   if(k.startsWith('Arrow')&&ev.altKey&&selNodes().length){ev.preventDefault();const s=ev.shiftKey?10:1;for(const n of selNodes()){n.tx=(n.tx||0)+(k==='ArrowLeft'?-s:k==='ArrowRight'?s:0);n.ty=(n.ty||0)+(k==='ArrowUp'?-s:k==='ArrowDown'?s:0)}render();syncInspector();softCommit();return}
   if(k.startsWith('Arrow')&&sel.size){ev.preventDefault();const s=ev.shiftKey?gsz():1;const dx=k==='ArrowLeft'?-s:k==='ArrowRight'?s:0,dy=k==='ArrowUp'?-s:k==='ArrowDown'?s:0;for(const n of selNodes()){n.x+=dx;n.y+=dy}for(const e of selEdges())for(const q of ['from','to'])if(loose(e[q])){e[q].x+=dx;e[q].y+=dy}render();syncInspector();softCommit();return}
   const ns=selNodes(),es=selEdges();
+  if(k==='Tab'&&!mod&&structure()&&ns.length===1&&sel.size===1){ev.preventDefault();addChild(ns[0]);return}
   if((k==='Enter'||k==='F2')&&sel.size===1){ev.preventDefault();if(ns.length)startEdit('node',ns[0].id,true);else if(es.length)startEdit('label',es[0].id,true);return}
   if(k.length===1&&!mod&&!ev.altKey&&sel.size===1){ev.preventDefault();if(ns.length)startEdit('node',ns[0].id,false,k);else if(es.length)startEdit('label',es[0].id,false,k)}
 });
@@ -1390,13 +1439,19 @@ function labelFields(t,pre){
       +rangeF('Corners',t,pre+'radius',0,30,1)+rangeF('Padding',t,pre+'pad',0,24,1)+chkF(t,pre+'shadow','Drop shadow'))}}
 function canvasPanel(){
   return `<div class="insp-head"><h2>Canvas</h2><small>${doc.nodes.length} shapes · ${doc.edges.length} arrows</small></div>`
-  +tabBar('canvas',[['bg','Background'],['presets','Presets'],['help','Help']])
-  +pane('canvas','bg',sec('Background',colorF('Colour','canvas','bg')+rangeF('Opacity %','canvas','bgOpacity',0,100,1,100)+`<p class="tip">At 0% opacity, PNG exports have a transparent background, which sits cleanly on any Word page colour.</p><div class="acts"><button class="btn outline" data-act="invert">Invert diagram colours</button></div><p class="tip">Flips every colour in the diagram from light to dark (or back), keeping the hues. Pair it with dark mode for a dark diagram.</p>`)
+  +tabBar('canvas',[['bg','General'],['presets','Presets'],['help','Help']])
+  +pane('canvas','bg',sec('Diagram type',segF('Type','canvas','mode',[['flow','Flowchart','Flowchart: steps joined by arrows'],['structure','Structure','Structure diagram: one box branches into several']])
+      +(structure()?segF('Connectors','canvas','sHeads',[['none','Lines','Plain lines'],['arrow','Arrows','Lines with arrowheads']])
+        +segF('Branches','canvas','sRoute',[['orthogonal','Tree','Right-angled lines sharing one trunk'],['straight','Straight','Straight lines fanning out']])
+        +segF('Direction','canvas','sDir',[['tb','Down','Top to bottom'],['lr','Across','Left to right']])
+        +`<p class="tip">Drag from a shape's dot as many times as you like: each drag adds a branch. Select a shape and press <b>Tab</b> to add a box under it. To move an arrow's end that sits on a shape, <b>Alt+drag</b> it.</p><div class="acts"><button class="btn outline" data-act="tree">Arrange as tree</button></div>`
+      :`<p class="tip">Making a hierarchy chart, such as a top-down design or a structure diagram? Switch to <b>Structure</b>: one box can branch into many, with plain lines and a tidy tree layout.</p>`))
+    +sec('Background',colorF('Colour','canvas','bg')+rangeF('Opacity %','canvas','bgOpacity',0,100,1,100)+`<p class="tip">At 0% opacity, PNG exports have a transparent background, which sits cleanly on any Word page colour.</p><div class="acts"><button class="btn outline" data-act="invert">Invert diagram colours</button></div><p class="tip">Flips every colour in the diagram from light to dark (or back), keeping the hues. Pair it with dark mode for a dark diagram.</p>`)
     +sec('Grid',`<label class="chk"><input type="checkbox" id="f-canvas-grid" ${A('canvas','grid')}>Show grid</label><label class="chk"><input type="checkbox" id="f-canvas-snap" ${A('canvas','snap')}>Snap to grid</label>`+rangeF('Grid size','canvas','gridSize',5,80,5)))
   +pane('canvas','presets',presetSec(false)+edgePresetSec(false))
   +pane('canvas','help',sec('How to',`<p class="tip">Click a shape on the left to add it, or drag it onto the canvas. Hover a shape and drag one of its blue dots to draw an arrow. Drop the arrow on a dot or along an edge to pin it there, or anywhere inside a shape to let it pick the nearest side. Arrows have dots too: drop an arrow on another arrow to join it there (it stays joined when things move or get cleaned up), or drag from an arrow's dot to branch off it. Double-click an arrow to give it a label such as Yes or No.</p>`)
   +sec('Tour','<p class="tip">A one-minute walk through every feature.</p><div class="acts"><button class="btn outline" data-act="tour">Show the tour</button></div>')+sec('About','<p class="tip">Linework is free. Signing in with Google saves your charts online, privately. See the <a href="privacy.html" target="_blank">privacy policy</a>.</p>')
-  +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Esc / Ctrl+Enter</dt><dd>Finish editing</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste, duplicate</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
+  +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Enter / Esc</dt><dd>Finish editing</dd><dt>Shift+Enter</dt><dd>New line in text</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste at the pointer, duplicate</dd><dt>Ctrl+S</dt><dd>Save to My charts</dd><dt>Ctrl+Shift+S</dt><dd>Save as a file</dd><dt>Tab</dt><dd>Add a box under the selected one (structure diagrams)</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
 }
 function renderInspector(){
   const ns=selNodes(),es=selEdges();
@@ -1427,6 +1482,7 @@ function apply(t,p,v){
   if(t==='node'&&p.startsWith('style.'))targets(t).forEach(remember);
   if(t==='edge'&&(p.startsWith('style.')||p.startsWith('label.style.')))targets(t).forEach(rememberEdge);
   if(p==='type')renderInspector();
+  if(t==='canvas'&&['mode','sHeads','sRoute','sDir'].includes(p))structApply(p);
   if(p==='bg'&&t==='canvas'){/* keep label backgrounds that matched old bg in sync */}
   render();syncInspector();softCommit();
 }
@@ -1475,6 +1531,7 @@ insp.addEventListener('click',ev=>{
   else if(a==='textCentre'){ns.forEach(n=>{n.tx=0;n.ty=0})}
   else if(a==='front'){doc.nodes=[...doc.nodes.filter(n=>!sel.has(n.id)),...ns]}
   else if(a==='back'){doc.nodes=[...ns,...doc.nodes.filter(n=>!sel.has(n.id))]}
+  else if(a==='tree'){arrangeTree();return}
   else if(a==='dup'){if(copySel())paste(gsz());return}
   else if(a==='del'){deleteSel();return}
   else if(a==='nCopyStyle'){copyStyle(ns,es);toast('Shape style copied');renderInspector();return}
@@ -1858,7 +1915,7 @@ function closeLib(){libM.hidden=true;if(lib)lib.renaming=null}
 function libRender(){if(libM.hidden)return;
   const st=lib?lib.state:'wait';let h='';
   if(st==='wait')h=`<p class="libNote">Connecting to your account…</p>`;
-  else if(st==='off'||st==='ro')h=`<p class="libNote warn"><b>Sign in to use My charts.</b> ${st==='off'?'Sign in with Google to save diagrams online and reach them from any device. <button class="btn primary" data-lib="signin">Sign in with Google</button> <a href="privacy.html" target="_blank">Privacy policy</a><br>':'Your account can view this page but can’t save to it. People who open it from a shared link only get view access. Ask the owner to invite you by email as an editor.'} You can still use <b>Save</b> and <b>Open</b> to keep diagrams as files, and this browser keeps your current diagram.</p>`;
+  else if(st==='off'||st==='ro')h=`<p class="libNote warn"><b>Sign in to use My charts.</b> ${st==='off'?'Sign in with Google to save diagrams online and reach them from any device. <button class="btn primary" data-lib="signin">Sign in with Google</button> <a href="privacy.html" target="_blank">Privacy policy</a><br>':'Your account can view this page but can’t save to it. People who open it from a shared link only get view access. Ask the owner to invite you by email as an editor.'} You can still use <b>Save as</b> and <b>Open</b> to keep diagrams as files, and this browser keeps your current diagram.</p>`;
   if(st==='ok'){
     const id=curChart(),r=id&&lib.items.get(id);
     h+=r?`<div class="libCur">Open now: <b>${esc(r.name)}</b><span class="muted">${esc(lib.status||'✓ Saved')} · changes save automatically</span></div>`
@@ -1974,6 +2031,7 @@ function openCtx(cx,cy,t){
   const ch=()=>{commit();render();renderInspector()};
   if(sel.size){
     head(ns.length&&es.length?sel.size+' items':ns.length>1?ns.length+' shapes':ns.length?SHAPES[ns[0].type].name:es.length>1?es.length+' arrows':'Arrow');
+    if(ns.length===1&&sel.size===1&&structure())I('Add box under it',()=>addChild(ns[0]),{kbd:'Tab',cls:'feature'});
     if(sel.size===1)I(ns.length?'Edit text':'Edit label',()=>ns.length?startEdit('node',ns[0].id,true):startEdit('label',es[0].id,true),{kbd:'Enter'});
     I('Cut',()=>{if(copySel())deleteSel()},{kbd:MOD+'X'});I('Copy',()=>{if(copySel())toast('Copied')},{kbd:MOD+'C'});
     I('Duplicate',()=>{if(copySel())paste(gsz())},{kbd:MOD+'D'});I('Delete',deleteSel,{kbd:'Del',cls:'danger'});
@@ -2081,7 +2139,14 @@ function invertDoc(){
 /* ---------- header buttons ---------- */
 $('#bUndo').onclick=undo;$('#bRedo').onclick=redo;
 $('#bNew').onclick=()=>{if(editing)endEdit();const keep=doc.canvas,def=doc.defaults;doc=normalize({canvas:keep,defaults:def});setSel([]);commit();fit();toast('Started a blank diagram. Undo brings the old one back.')};
-$('#bSave').onclick=async()=>{flush();const blob=new Blob([JSON.stringify({app:'linework',version:1,doc,presets,edgePresets:epresets},null,1)],{type:'application/json'});const r=await saveFile('flowchart.json',blob);if(r)toast(r)};
+/* Save keeps the diagram in My charts (asking for a name the first time); Save as downloads a .json file */
+function saveAs(){flush();const id=curChart(),nm=(id?lib.items.get(id).name:'flowchart').replace(/[\\/:*?"<>|]+/g,' ').trim()||'flowchart';
+  const blob=new Blob([JSON.stringify({app:'linework',version:1,doc,presets,edgePresets:epresets},null,1)],{type:'application/json'});saveFile(nm+'.json',blob).then(r=>{if(r)toast(r)})}
+async function saveMain(){if(editing)endEdit();flush();
+  if(!lib){toast('Still connecting to your account…');return}
+  if(lib.state!=='ok'||!curChart()){openLib();setTimeout(()=>$('#libName')?.focus(),0);return}
+  clearTimeout(lib.t);await libWrite();toast(!lib.status||lib.status==='✓ Saved'?`Saved “${lib.items.get(curChart()).name}” to My charts`:lib.status)}
+$('#bSave').onclick=saveMain;$('#bSaveAs').onclick=saveAs;
 $('#bOpen').onclick=()=>$('#fileIn').click();
 $('#fileIn').onchange=async ev=>{const file=ev.target.files[0];ev.target.value='';if(!file)return;
   try{const j=JSON.parse(await file.text());const d=j.doc||j;if(!Array.isArray(d.nodes))throw 0;delete d.chart;doc=normalize(d);
@@ -2243,7 +2308,7 @@ $('#exCopy').onclick=async()=>{if(!ex.blob||ex.fmt!=='png')return;const blob=ex.
    Shown once on a first visit, and from Canvas → Help any time. KEEP THIS IN STEP WITH THE APP:
    when a feature is added or changed, update (or add) its step here and bump TOUR_V so people
    who saw an older tour get the new one. */
-const TOUR_V=4;
+const TOUR_V=5;
 const tI=(d,extra='')=>`<svg viewBox="0 0 200 110" width="200" height="110" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
 const TOUR=[
   {t:'Welcome to Linework',art:tI('<rect x="70" y="8" width="60" height="22" rx="11"/><path d="M100 30v14"/><path d="M100 44l22 14-22 14-22-14z"/><path d="M100 72v14M122 58h30"/><rect x="72" y="86" width="56" height="18" rx="3"/><rect x="152" y="48" width="40" height="20" rx="3"/>'),
@@ -2252,20 +2317,22 @@ const TOUR=[
    b:`<ul><li><b>Click</b> a shape on the left to add it, or <b>drag</b> it onto the canvas.</li><li>Shapes are grouped by type, and the ones you use most appear under <b>Recent</b>.</li><li><b>Double-click</b> empty canvas to drop a box right there.</li><li>Drag the white squares on a selected shape to resize it.</li></ul>`},
   {t:'Connect with arrows',at:'node',art:tI('<rect x="14" y="36" width="60" height="34" rx="4"/><circle cx="74" cy="53" r="5" fill="currentColor"/><path d="M80 53h52"/><path d="M128 47l9 6-9 6" fill="currentColor"/><rect x="138" y="36" width="50" height="34" rx="4"/>'),
    b:`<ul><li><b>Hover</b> a shape (like the highlighted one) to show its blue dots, then drag a dot onto another shape.</li><li>Arrows have dots too: drop an arrow onto another arrow to join it, or drag from an arrow's dot to branch off it. Joined arrows stay together when you move things or clean up.</li><li>An arrow can also end in empty space.</li><li><b>Double-click</b> an arrow to give it a label, such as Yes or No. Labels start centred on the line; drag them along it.</li><li>In the arrow's <b>Style</b> tab choose elbow, straight or curved, plus arrowheads and line style.</li></ul>`},
+  {t:'Flowchart or structure diagram',at:'#insp',art:tI('<rect x="76" y="8" width="48" height="22" rx="3"/><path d="M100 30v14M40 44h120M40 44v14M100 44v14M160 44v14"/><rect x="16" y="58" width="48" height="22" rx="3"/><rect x="76" y="58" width="48" height="22" rx="3"/><rect x="136" y="58" width="48" height="22" rx="3"/><path d="M40 80v10M28 90h24M28 90v6M52 90v6"/>'),
+   b:`<ul><li>Making a hierarchy chart, like a top-down design? Click empty canvas, and under <b>General → Diagram type</b> choose <b>Structure</b>.</li><li>Then one box can branch into many: drag from the same dot again and again, or select a box and press <b>Tab</b> to add one under it.</li><li>Pick plain lines or arrows, a shared-trunk tree or straight lines, and <b>Arrange as tree</b> lines everything up neatly.</li></ul>`},
   {t:'Edit text in place',at:'node',art:tI('<rect x="40" y="26" width="120" height="50" rx="5"/><rect x="58" y="40" width="84" height="22" rx="3" stroke-dasharray="3 3"/><path d="M118 44v14"/><path d="M70 51h40" stroke-width="3"/>'),
-   b:`<ul><li><b>Double-click</b> a shape or arrow label and type. Press <b>Esc</b> or click away to finish.</li><li>To move text inside a shape, <b>Alt+drag</b> it, or use <b>Alt+arrow keys</b>. There are exact X/Y offsets in the Text section too.</li><li>Font, size, colour, <b>All caps</b> and <b>Text outline</b> are in the sidebar.</li></ul>`},
+   b:`<ul><li><b>Double-click</b> a shape or arrow label and type. Press <b>Enter</b> or click away to finish, and <b>Shift+Enter</b> for a new line.</li><li>To move text inside a shape, <b>Alt+drag</b> it, or use <b>Alt+arrow keys</b>. There are exact X/Y offsets in the Text section too.</li><li>Font, size, colour, <b>All caps</b> and <b>Text outline</b> are in the sidebar.</li></ul>`},
   {t:'Style it',at:'#insp',art:tI('<rect x="120" y="8" width="70" height="94" rx="6"/><path d="M130 22h22M158 22h22"/><path d="M130 40h50M130 56h50M130 72h34"/><rect x="14" y="34" width="80" height="40" rx="5" fill="currentColor" fill-opacity=".15"/>'),
    b:`<ul><li>Select something and this sidebar shows its options in tabs: <b>Style</b>, <b>Label</b> (arrows) and <b>Presets</b>.</li><li>Your styling carries over: change a Decision's colours and the next Decision you add will match. Each shape type remembers its own look.</li><li><b>Invert colours</b> and the background are under <b>Canvas</b> (click empty space).</li></ul>`},
   {t:'Presets',at:'#bPresets',art:tI('<rect x="14" y="16" width="52" height="34" rx="5"/><rect x="74" y="16" width="52" height="34" rx="17"/><path d="M160 16l26 17-26 17-26-17z"/><rect x="14" y="62" width="172" height="34" rx="6" stroke-dasharray="4 4"/>'),
    b:`<ul><li>A preset is a saved look. Open the <b>Presets</b> menu at the top to create, preview and edit them.</li><li>Edit a preset and every shape using it updates.</li><li>Give a shape type its own preset (e.g. every Decision starts amber), and choose a default for everything else.</li><li><b>Right-click</b> a preset card to edit, duplicate or delete it.</li><li>Signed in? Your presets sync across your devices.</li></ul>`},
   {t:'Right-click and Clean up',at:'#stage',art:tI('<rect x="96" y="14" width="92" height="84" rx="7"/><path d="M108 30h56M108 46h56M108 62h40"/><path d="M108 80h66" stroke-width="3"/><path d="M30 30l18 44 7-18 18-7z" fill="currentColor" fill-opacity=".2"/>'),
    b:`<ul><li><b>Right-click</b> anything for cut, copy, duplicate, delete, layering and styles. On touch screens, press and hold.</li><li><b>Clean up</b> (right-click empty canvas, or a selection) tidies a messy diagram: even spacing, straight lines, fewer crossings. Pick settings first, or <b>Shift+click</b> to apply instantly.</li><li>Tick <b>Fit to page</b> to keep a top-down chart but wrap it into side-by-side columns, so it only takes up part of a Word page (a third, half or two thirds). Columns are joined by an arrow or by matching A → A connectors, and it can tighten the spacing first so fewer columns are needed.</li><li>Everything can be undone with <b>Ctrl+Z</b>.</li></ul>`},
-  {t:'My charts',at:'#bLib',art:tI('<rect x="16" y="14" width="76" height="38" rx="5"/><rect x="108" y="14" width="76" height="38" rx="5"/><rect x="16" y="62" width="76" height="38" rx="5"/><path d="M146 66v30M131 81h30"/>'),
-   b:`<ul><li><b>My charts</b> (top bar) saves diagrams to your account, so you can open them on any device. Once saved, changes save automatically.</li><li>Rename, duplicate or delete them there, and <b>Download backup</b> now and then.</li><li class="warnLi">This needs you to <b>Sign in</b> (top right) with Google. Otherwise use <b>Save</b> and <b>Open</b> for .json files; this browser also keeps your current diagram.</li></ul>`},
+  {t:'Save and My charts',at:'#bSave',art:tI('<rect x="16" y="14" width="76" height="38" rx="5"/><rect x="108" y="14" width="76" height="38" rx="5"/><rect x="16" y="62" width="76" height="38" rx="5"/><path d="M146 66v30M131 81h30"/>'),
+   b:`<ul><li><b>Save</b> (Ctrl+S) keeps the diagram in <b>My charts</b>, in your account, so you can open it on any device. Name it the first time; after that, changes save automatically.</li><li><b>Save as</b> (Ctrl+Shift+S) downloads it as a .json file instead, and <b>Open</b> loads one back.</li><li>Open <b>My charts</b> to switch between charts, rename, duplicate or delete them, and <b>Download backup</b> now and then.</li><li class="warnLi">My charts needs you to <b>Sign in</b> (top right) with Google. Otherwise use <b>Save as</b>; this browser also keeps your current diagram.</li></ul>`},
   {t:'Export for Word',at:'#bExport',art:tI('<rect x="20" y="12" width="70" height="88" rx="4"/><path d="M32 30h46M32 42h46M32 54h30"/><rect x="32" y="64" width="46" height="26" rx="2" fill="currentColor" fill-opacity=".15"/><path d="M104 56h40"/><path d="M138 49l9 7-9 7"/><rect x="152" y="38" width="36" height="36" rx="4"/>'),
    b:`<ul><li><b>Export</b> makes a PNG, JPG or SVG. PNG is best for Word.</li><li>Choose <b>Size in Word</b> (actual, full page width or half), and the picture arrives at exactly that size and stays sharp in print.</li><li><b>Copy image</b> then paste into Word does the same, no file needed.</li></ul>`},
   {t:'Handy shortcuts',art:tI('<rect x="14" y="30" width="40" height="34" rx="6"/><rect x="62" y="30" width="40" height="34" rx="6"/><rect x="110" y="30" width="76" height="34" rx="6"/><path d="M26 47h16M74 47h16M124 47h48"/>'),
-   b:`<dl class="keys"><dt>Ctrl+Z / Ctrl+Shift+Z</dt><dd>Undo / redo</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste, duplicate</dd><dt>Delete</dt><dd>Remove selection</dd><dt>Arrow keys</dt><dd>Nudge (Shift for a grid step)</dd><dt>Scroll · right-drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd></dl><p class="muted">The full list is in <b>Canvas → Help</b>. That's it, have fun!</p>`}
+   b:`<dl class="keys"><dt>Ctrl+Z / Ctrl+Shift+Z</dt><dd>Undo / redo</dd><dt>Ctrl+S</dt><dd>Save</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste at the pointer, duplicate</dd><dt>Delete</dt><dd>Remove selection</dd><dt>Arrow keys</dt><dd>Nudge (Shift for a grid step)</dd><dt>Scroll · right-drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd></dl><p class="muted">The full list is in <b>Canvas → Help</b>. That's it, have fun!</p>`}
 ];
 let tourI=0;const tourM=$('#tourModal'),tourH=$('#tourHole'),tourS=tourM.querySelector('.sheet.tour');
 /* the element a step points at, or null to show the card centred */
