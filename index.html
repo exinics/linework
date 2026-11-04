@@ -851,7 +851,11 @@ function updUndo(){$('#bUndo').disabled=!undoS.length;$('#bRedo').disabled=!redo
 function restore(s){doc=normalize(JSON.parse(s));sel=new Set([...sel].filter(id=>nodeById(id)||edgeById(id)));apCache.clear();onSel(true);render();saveLocal()}
 function undo(){flush();if(editing)endEdit();if(!undoS.length)return;redoS.push(lastSnap);lastSnap=undoS.pop();restore(lastSnap);updUndo()}
 function redo(){flush();if(!redoS.length)return;undoS.push(lastSnap);lastSnap=redoS.pop();restore(lastSnap);updUndo()}
-let saveT=0;function saveLocal(){clearTimeout(saveT);saveT=setTimeout(()=>{try{localStorage.setItem('linework.v1',JSON.stringify({doc,view}))}catch(_){}} ,300);libPush()}
+let saveT=0;function writeLocal(){clearTimeout(saveT);saveT=0;try{localStorage.setItem('linework.v1',JSON.stringify({doc,view}))}catch(_){}}
+function saveLocal(){clearTimeout(saveT);saveT=setTimeout(writeLocal,300);libPush()}
+/* leaving or hiding the page writes everything now instead of after the usual pauses */
+function flushAll(){flush();writeLocal();if(lib&&lib.state==='ok'){clearTimeout(lib.t);libWrite()}if(sync&&sync.dirty){clearTimeout(sync.t);syncWrite()}}
+addEventListener('pagehide',flushAll);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushAll()});
 function normalize(d){
   const D=baseDefaults();d=d||{};d.nodes=Array.isArray(d.nodes)?d.nodes:[];d.edges=Array.isArray(d.edges)?d.edges:[];
   d.canvas=Object.assign({bg:'#FFFFFF',bgOpacity:1,grid:true,snap:true,gridSize:20,mode:'flow',sHeads:'none',sRoute:'orthogonal',sDir:'tb'},d.canvas||{});
@@ -1018,8 +1022,10 @@ function endEdit(){
   if(ed.kind==='label'){const e=edgeById(ed.id);if(e)e.label.text=e.label.text.replace(/\s+$/,'')}
   commit();onSel(true);
 }
-ta.addEventListener('input',()=>{if(!editing)return;if(editing.kind==='node'){const n=nodeById(editing.id);if(n)n.text=ta.value}else{const e=edgeById(editing.id);if(e)e.label.text=ta.value}draw();syncInspector()});
-ta.addEventListener('keydown',ev=>{ev.stopPropagation();if(ev.key==='Escape'||(ev.key==='Enter'&&!ev.shiftKey&&!ev.isComposing)){ev.preventDefault();endEdit()}});
+ta.addEventListener('input',()=>{if(!editing)return;if(editing.kind==='node'){const n=nodeById(editing.id);if(n)n.text=ta.value}else{const e=edgeById(editing.id);if(e)e.label.text=ta.value}draw();syncInspector();saveLocal()});
+ta.addEventListener('keydown',ev=>{ev.stopPropagation();
+  if((ev.ctrlKey||ev.metaKey)&&ev.key.toLowerCase()==='s'){ev.preventDefault();if(ev.shiftKey){endEdit();saveAs()}else saveMain();return}
+  if(ev.key==='Escape'||(ev.key==='Enter'&&!ev.shiftKey&&!ev.isComposing)){ev.preventDefault();endEdit()}});
 ta.addEventListener('blur',()=>setTimeout(()=>{if(editing&&document.activeElement!==ta)endEdit()},0));
 
 /* ---------- pointer interaction ---------- */
@@ -1204,6 +1210,7 @@ window.addEventListener('keydown',ev=>{
   if(!cuEl.hidden){if(ev.key==='Escape'){ev.preventDefault();cuCancel()}return}
   if(ev.key==='ContextMenu'||(ev.shiftKey&&ev.key==='F10')){if(typing(ev.target))return;ev.preventDefault();const ns=selNodes(),r=svg.getBoundingClientRect();
     const b=ns.length?selectionBounds(ns):null,p=b?{x:(b.x0+b.x1)/2,y:(b.y0+b.y1)/2}:viewCenter();openCtx(r.left+view.x+p.x*view.z,r.top+view.y+p.y*view.z,{p,keep:true});return}
+  if((ev.ctrlKey||ev.metaKey)&&ev.key.toLowerCase()==='s'){ev.preventDefault();ev.shiftKey?saveAs():saveMain();return}
   if(typing(ev.target)){if(ev.key==='Escape')ev.target.blur();return}
   const mod=ev.ctrlKey||ev.metaKey,k=ev.key;
   if(k===' '){if(!spaceDown){spaceDown=true;svg.style.cursor='grab'}ev.preventDefault();return}
@@ -1212,7 +1219,6 @@ window.addEventListener('keydown',ev=>{
   if(mod&&k.toLowerCase()==='c'){if(copySel())toast('Copied');ev.preventDefault();return}
   if(mod&&k.toLowerCase()==='x'){if(copySel())deleteSel();ev.preventDefault();return}
   if(mod&&k.toLowerCase()==='v'){pasteHere();ev.preventDefault();return}
-  if(mod&&k.toLowerCase()==='s'){ev.preventDefault();ev.shiftKey?saveAs():saveMain();return}
   if(mod&&k.toLowerCase()==='d'){ev.preventDefault();if(copySel())paste(gsz());return}
   if(mod&&k.toLowerCase()==='a'){ev.preventDefault();setSel([...doc.nodes.map(n=>n.id),...doc.edges.map(e=>e.id)]);return}
   if(mod&&k==='0'){ev.preventDefault();const r=svg.getBoundingClientRect();zoomAt(r.width/2,r.height/2,1/view.z);return}
@@ -1859,14 +1865,19 @@ $('#cuCancel').onclick=cuCancel;$('#cuApply').onclick=cuApply;
    it is (doc.chart), so undo/redo keep the link consistent, and edits auto-save. */
 var lib=null;
 const libM=$('#libModal'),libB=$('#libBody');
-const LIB_MAX=240000;
+/* the store takes at most 256 KiB per document, counted in UTF-8 bytes with the preview included */
+const LIB_MAX=255000,u8len=t=>new Blob([t]).size;
+/* the preview is dropped when it's what tips a chart over the limit; null = the diagram itself is too big */
+function libFits(json,thumb){const b=u8len(json)+800;return b>LIB_MAX?null:b+thumb.length>LIB_MAX?'':thumb}
+/* a write's stamp is always later than the version it replaces, even if this device's clock is behind */
+const libStamp=id=>{const r=lib.items.get(id);return Math.max(Date.now(),(libBase.id===id?libBase.updated:0)+1,(r&&r.updated||0)+1)};
 const hashStr=t=>{let h1=0xdeadbeef,h2=0x41c6ce57;for(let i=0;i<t.length;i++){const c=t.charCodeAt(i);h1=Math.imul(h1^c,2654435761);h2=Math.imul(h2^c,1597334677)}h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return(4294967296*(2097151&h2)+(h1>>>0)).toString(36)};
 /* what this device last synced for the open chart: {id, updated, hash} */
 let libBase={};try{libBase=JSON.parse(localStorage.getItem('linework.chartBase')||'{}')||{}}catch(_){}
 function setBase(id,updated,json){libBase={id,updated,hash:hashStr(json)};try{localStorage.setItem('linework.chartBase',JSON.stringify(libBase))}catch(_){}}
 const curChart=()=>lib&&lib.items&&doc.chart&&lib.items.get(doc.chart)?doc.chart:null;
 const newChartId=()=>'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-const tooBig=()=>toast('This diagram is too big for My charts. Use Save to keep it as a file.');
+const tooBig=()=>toast('This diagram is too big for My charts. Use Save as to keep it as a file.');
 function libThumb(){
   const ns=doc.nodes,es=doc.edges;if(!ns.length&&!es.length)return'';
   try{const W=320,H=200,c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d');
@@ -1881,16 +1892,23 @@ function libPush(){if(!lib||lib.state!=='ok')return;clearTimeout(lib.t);lib.t=se
 async function libWrite(){
   const id=curChart();if(!id)return;if(lib.busy){lib.again=true;return}
   const json=JSON.stringify(doc);if(libBase.id===id&&libBase.hash===hashStr(json))return;
-  if(json.length>LIB_MAX){libStatus('Too big to save to your account');tooBig();return}
-  lib.busy=true;libStatus('Saving…');const updated=Date.now();
-  try{await lib.col.doc(id).update({doc:JSON.parse(json),updated,thumb:libThumb()});setBase(id,updated,json);libStatus('✓ Saved')}
+  const thumb=libFits(json,libThumb());
+  if(thumb==null){if(lib.status!==BIG){libStatus(BIG);tooBig()}return}
+  lib.busy=true;libStatus('Saving…');const updated=libStamp(id);
+  /* a full replace, not update(): claude.ai's update merges nested objects, so a setting removed here
+     (e.g. defaults.nodePreset when its preset is deleted) would stay in the saved copy */
+  const c=lib.items.get(id);
+  try{await lib.col.doc(id).set({name:c.name,created:c.created||updated,updated,doc:JSON.parse(json),thumb});setBase(id,updated,json);libStatus('✓ Saved')}
   catch(e){libFail(e)}
   lib.busy=false;if(lib.again){lib.again=false;libWrite()}}
-function libFail(e){const c=e&&e.code;
+const BIG='Too big to save to your account';
+/* error codes come as quota_exceeded (claude.ai) or resource-exhausted (Firebase): compare them in one spelling */
+function libFail(e){const c=String(e&&e.code||'').replace(/-/g,'_');clearTimeout(lib.t);
   if(c==='invalid_argument'&&!lib.items.size){lib.state='ro';libRender();return}
-  libStatus(c==='quota_exceeded'?'Account storage full':'Couldn’t save, will retry');
-  if(c==='quota_exceeded')toast('Your My charts storage is full. Delete some charts, or use Save to keep a file.');
-  else{clearTimeout(lib.t);lib.t=setTimeout(libWrite,8000)}}
+  if(c==='quota_exceeded'){libStatus('Account storage full');toast('Your My charts storage is full. Delete some charts, or use Save as to keep a file.');return}
+  /* the store refused this exact write (or the chart is gone): sending it again can't work, so wait for the next edit */
+  if(c==='invalid_argument'||c==='not_found'||c==='revoked'){libStatus('Couldn’t save');toast('Couldn’t save to My charts. Use Save as to keep a file.');return}
+  libStatus('Couldn’t save, will retry');lib.t=setTimeout(libWrite,8000)}
 /* load a chart into the editor (undoable, like opening a file) */
 function libLoad(id,quiet){const r=lib.items.get(id);if(!r||!r.doc)return;if(editing)endEdit();flush();
   doc=normalize(clone(r.doc));doc.chart=id;setBase(id,r.updated,JSON.stringify(doc));apCache.clear();
@@ -1898,13 +1916,15 @@ function libLoad(id,quiet){const r=lib.items.get(id);if(!r||!r.doc)return;if(edi
   else{setSel([]);commit();fit();toast(`Opened “${r.name}”. Undo brings the previous diagram back.`)}
   updLibBtn()}
 /* a new chart from diagram data (duplicate / restore) */
-async function libCreate(name,d,thumb){
-  const id=newChartId(),now=Date.now();d=clone(d);d.chart=id;const json=JSON.stringify(d);if(json.length>LIB_MAX){tooBig();return null}
-  try{await lib.col.doc(id).set({name:(name||'Untitled chart').slice(0,80),created:now,updated:now,doc:JSON.parse(json),thumb:thumb||''});return id}catch(e){libFail(e);return null}}
-async function libSaveCurrent(name){if(!lib||lib.state!=='ok')return;flush();name=name||'Untitled chart';
-  const id=newChartId(),now=Date.now();doc.chart=id;const json=JSON.stringify(doc);
-  if(json.length>LIB_MAX){delete doc.chart;tooBig();return}
-  try{await lib.col.doc(id).set({name:name.slice(0,80),created:now,updated:now,doc:JSON.parse(json),thumb:libThumb()});
+/* (a backup's charts keep their own dates, so restoring the same backup twice doesn't double them up) */
+async function libCreate(name,d,thumb,dates){
+  const id=newChartId(),now=Date.now(),num=v=>typeof v==='number'&&isFinite(v)?v:now;d=clone(d);d.chart=id;const json=JSON.stringify(d);
+  thumb=libFits(json,thumb||'');if(thumb==null){tooBig();return null}
+  try{await lib.col.doc(id).set({name:(name||'Untitled chart').slice(0,80),created:num(dates&&dates.created),updated:num(dates&&dates.updated),doc:JSON.parse(json),thumb});return id}catch(e){libFail(e);return null}}
+async function libSaveCurrent(name){if(!lib||lib.state!=='ok')return;if(editing)endEdit();flush();name=name||'Untitled chart';
+  const id=newChartId(),now=Date.now();doc.chart=id;const json=JSON.stringify(doc),thumb=libFits(json,libThumb());
+  if(thumb==null){delete doc.chart;tooBig();return}
+  try{await lib.col.doc(id).set({name:name.slice(0,80),created:now,updated:now,doc:JSON.parse(json),thumb});
     if(!lib.items.has(id))lib.items.set(id,{name,created:now,updated:now,doc:JSON.parse(json)});
     setBase(id,now,json);commit();libStatus('✓ Saved');toast(`Saved to My charts as “${name}”. Changes now save automatically.`);libRender()}
   catch(e){delete doc.chart;libFail(e);libRender()}}
@@ -1941,7 +1961,7 @@ libB.addEventListener('click',async ev=>{const b=ev.target.closest('[data-lib]')
   if(a==='ren'){lib.renaming=id;libRender();return}
   if(a==='dup'&&c){if(await libCreate(c.name+' copy',c.doc,c.thumb))toast(`Duplicated “${c.name}”`);return}
   if(a==='del'&&c){if(!b.classList.contains('armed')){b.classList.add('armed');b.textContent='Delete forever?';setTimeout(()=>{if(b.isConnected){b.classList.remove('armed');b.textContent='Delete'}},3000);return}
-    const was=curChart()===id;
+    const was=curChart()===id;lib.deleting=id;
     try{await lib.col.doc(id).delete();lib.items.delete(id);if(was){delete doc.chart;commit()}updLibBtn();libRender();toast(`Deleted “${c.name}”`+(was?'. It’s still open here; save it again to keep it.':''))}catch(e){libFail(e)}return}
   if(a==='backup'){const charts=[...lib.items.values()].map(c=>({name:c.name,created:c.created,updated:c.updated,doc:c.doc}));
     const r=await saveFile('linework-charts-'+new Date().toISOString().slice(0,10)+'.json',new Blob([JSON.stringify({app:'linework',kind:'charts',version:1,charts,presets,edgePresets:epresets},null,1)],{type:'application/json'}));if(r)toast(r);return}
@@ -1952,7 +1972,8 @@ $('#libIn').onchange=async ev=>{const file=ev.target.files[0];ev.target.value=''
   if(!charts){toast('That file isn’t a Linework backup.');return}
   let n=0,skip=0;for(const c of charts){if(!c||!c.doc||!Array.isArray(c.doc.nodes))continue;
     if([...lib.items.values()].some(x=>x.name===c.name&&x.updated===c.updated)){skip++;continue}
-    if(await libCreate(c.name||'Restored chart',normalize(clone(c.doc))))n++}
+    if(await libCreate(c.name||'Restored chart',normalize(clone(c.doc)),'',c))n++}
+  mergePresets(j);renderInspector();
   toast(`Restored ${n} chart${n===1?'':'s'}`+(skip?` (${skip} already there)`:''))};
 $('#bLib').onclick=openLib;$('#libClose').onclick=closeLib;libM.addEventListener('pointerdown',ev=>{if(ev.target===libM)closeLib()});
 (async()=>{const off=()=>{lib={state:'off',items:new Map(),status:''};libRender()};
@@ -1963,21 +1984,25 @@ $('#bLib').onclick=openLib;$('#libClose').onclick=closeLib;libM.addEventListener
   const can=await user.can('data.write');
   lib={state:can===false?'ro':'ok',items:new Map(),col:db.doc('data/users/'+id+'/library').collection('charts'),busy:false,again:false,t:0,status:'',renaming:null};
   libRender();updLibBtn();if(lib.state!=='ok')return;
+  /* `first` lasts until the store itself answers: a copy kept from an earlier visit (fromCache) may be out of date */
   let first=true;
   lib.col.onSnapshot(snap=>{
     if(first&&snap.metadata.fromCache&&snap.empty)return;
     const fresh=new Map();for(const d of snap.docs){const v=d.data();if(v)fresh.set(d.id,{...v})}
+    const cid=doc.chart,r=cid&&fresh.get(cid),had=cid&&lib.items.has(cid);
     lib.items=fresh;
+    if(cid&&!r&&had&&cid!==lib.deleting&&!snap.metadata.fromCache)toast('This chart was deleted from My charts on another device. It’s still open here; save it again to keep it.');
     /* the open chart changed on another device: pick it up unless there are unsaved edits here */
-    const cid=doc.chart,r=cid&&fresh.get(cid);
     if(r&&!snap.metadata.hasPendingWrites&&!lib.busy){
       const mine=hashStr(JSON.stringify(doc)),known=libBase.id===cid,clean=known&&libBase.hash===mine;
       if(r.updated>(known?libBase.updated:0)){
         if(clean)libLoad(cid,true);
-        else if(first){toast('This chart was also changed on another device. Your version here will be saved over it.');libPush()}
+        /* both sides changed: keep the other device's version as a copy, then save this one */
+        else if(lib.conflict!==r.updated){lib.conflict=r.updated;const nm=(r.name+' (other device)').slice(0,80);
+          libCreate(nm,r.doc,r.thumb,r).then(x=>{if(x)toast(`This chart was also changed on another device. That version is kept in My charts as “${nm}”.`)});libPush()}
       }else if(first&&!clean)libPush();
     }
-    first=false;updLibBtn();if(!lib.renaming)libRender();
+    if(!snap.metadata.fromCache)first=false;updLibBtn();if(!lib.renaming)libRender();
   },()=>libStatus('Couldn’t reach your account'))
  }catch(_){off()}})();
 
@@ -1986,13 +2011,19 @@ $('#bLib').onclick=openLib;$('#libClose').onclick=closeLib;libM.addEventListener
    (data/users/<id>/presets), live across devices. Without an account (or without
    write access) they stay in this browser only, as before. */
 var sync=null;
-function syncPush(){if(!sync)return;sync.dirty=true;clearTimeout(sync.t);sync.t=setTimeout(syncWrite,800)}
+/* 'linework.presetDirty' marks preset changes the account hasn't got yet (made offline, before connecting,
+   or just before the page closed), so the next visit sends them instead of replacing them with the account's copy */
+const PDIRTY='linework.presetDirty',setPDirty=on=>{try{on?localStorage.setItem(PDIRTY,'1'):localStorage.removeItem(PDIRTY)}catch(_){}};
+function syncPush(){setPDirty(1);if(!sync)return;sync.dirty=true;clearTimeout(sync.t);sync.t=setTimeout(syncWrite,800)}
 async function syncWrite(){if(sync.busy){sync.again=true;return}
-  const s=JSON.stringify({shape:presets,arrow:epresets});if(s===sync.last){sync.dirty=false;return}
-  sync.busy=true;sync.sent=s;
-  try{await sync.ref.set({shape:JSON.parse(s).shape,arrow:JSON.parse(s).arrow,v:1});sync.last=s;syncState('on')}
-  catch(e){syncState(e&&e.code==='quota_exceeded'?'full':'err')}
-  sync.busy=false;if(sync.again){sync.again=false;syncWrite()}else sync.dirty=false}
+  const s=JSON.stringify({shape:presets,arrow:epresets});if(s===sync.last){sync.dirty=false;setPDirty(0);return}
+  sync.busy=true;sync.sent=s;let ok=false,c='';
+  try{await sync.ref.set({shape:JSON.parse(s).shape,arrow:JSON.parse(s).arrow,v:1});sync.last=s;ok=true;syncState('on')}
+  catch(e){c=String(e&&e.code||'').replace(/-/g,'_');syncState(c==='quota_exceeded'?'full':'err')}
+  sync.busy=false;
+  if(sync.again){sync.again=false;syncWrite()}
+  else if(ok){sync.dirty=false;if(JSON.stringify({shape:presets,arrow:epresets})===s)setPDirty(0)}
+  else if(c!=='quota_exceeded'&&c!=='invalid_argument'&&c!=='revoked'){clearTimeout(sync.t);sync.t=setTimeout(syncWrite,8000)}}
 function syncState(st){const el=$('#pmSync');if(el)el.textContent={on:'✓ Synced to your account',err:'Couldn’t sync, saved in this browser',full:'Sync storage full'}[st]||''}
 function syncAdopt(d){presets=clone(d.shape||[]);epresets=clone(d.arrow||[]);fillPresetKeys();fillEdgePresetKeys();
   try{localStorage.setItem(PRESET_KEY,JSON.stringify(presets));localStorage.setItem(EPRESET_KEY,JSON.stringify(epresets))}catch(_){}
@@ -2005,8 +2036,9 @@ function syncAdopt(d){presets=clone(d.shape||[]);epresets=clone(d.arrow||[]);fil
     if(snap.metadata.hasPendingWrites)return;
     if(first){if(!snap.exists&&snap.metadata.fromCache)return;first=false;
       sync={ref,last:'',sent:'',busy:false,again:false,dirty:false,t:0};
-      let seen=false;try{seen=!!localStorage.getItem('linework.presetSync')}catch(_){}
-      if(snap.exists){const d=snap.data();sync.last=JSON.stringify({shape:d.shape||[],arrow:d.arrow||[]});
+      let seen=false,dirty=false;try{seen=!!localStorage.getItem('linework.presetSync');dirty=!!localStorage.getItem(PDIRTY)}catch(_){}
+      if(snap.exists&&seen&&dirty){const d=snap.data();sync.last=JSON.stringify({shape:d.shape||[],arrow:d.arrow||[]});sync.dirty=true}
+      else if(snap.exists){const d=snap.data();sync.last=JSON.stringify({shape:d.shape||[],arrow:d.arrow||[]});
         /* a device's first sync merges in its own presets the account doesn't have yet */
         const add=(mine,theirs)=>seen?[]:mine.filter(p=>!theirs.some(q=>q.id===p.id||q.name===p.name));
         const ms=add(presets,d.shape||[]),me=add(epresets,d.arrow||[]);
@@ -2147,11 +2179,14 @@ async function saveMain(){if(editing)endEdit();flush();
   if(lib.state!=='ok'||!curChart()){openLib();setTimeout(()=>$('#libName')?.focus(),0);return}
   clearTimeout(lib.t);await libWrite();toast(!lib.status||lib.status==='✓ Saved'?`Saved “${lib.items.get(curChart()).name}” to My charts`:lib.status)}
 $('#bSave').onclick=saveMain;$('#bSaveAs').onclick=saveAs;
+/* presets carried in a file or backup join the ones here (same id = already have it) */
+function mergePresets(j){if(!j)return;
+  if(Array.isArray(j.presets)){const have=new Set(presets.map(p=>p.id));for(const p of j.presets)if(p&&p.id&&p.style&&!have.has(p.id))presets.push({id:p.id,name:String(p.name||'Preset'),shape:SHAPES[p.shape]?p.shape:'process',style:Object.assign(baseDefaults().node,p.style),...(Array.isArray(p.auto)?{auto:p.auto.filter(t=>SHAPES[t]&&!autoPreset(t))}:{})});fillPresetKeys();savePresets()}
+  if(Array.isArray(j.edgePresets)){const have=new Set(epresets.map(p=>p.id));const D=baseDefaults();for(const p of j.edgePresets)if(p&&p.id&&p.style&&!have.has(p.id))epresets.push({id:p.id,name:String(p.name||'Arrow'),style:Object.assign(clone(D.edge),p.style),label:Object.assign(clone(D.label),p.label||{})});saveEP()}}
 $('#bOpen').onclick=()=>$('#fileIn').click();
 $('#fileIn').onchange=async ev=>{const file=ev.target.files[0];ev.target.value='';if(!file)return;
   try{const j=JSON.parse(await file.text());const d=j.doc||j;if(!Array.isArray(d.nodes))throw 0;delete d.chart;doc=normalize(d);
-    if(Array.isArray(j.presets)){const have=new Set(presets.map(p=>p.id));for(const p of j.presets)if(p&&p.id&&p.style&&!have.has(p.id))presets.push({id:p.id,name:String(p.name||'Preset'),shape:SHAPES[p.shape]?p.shape:'process',style:Object.assign(baseDefaults().node,p.style),...(Array.isArray(p.auto)?{auto:p.auto.filter(t=>SHAPES[t]&&!autoPreset(t))}:{})});savePresets()}
-    if(Array.isArray(j.edgePresets)){const have=new Set(epresets.map(p=>p.id));const D=baseDefaults();for(const p of j.edgePresets)if(p&&p.id&&p.style&&!have.has(p.id))epresets.push({id:p.id,name:String(p.name||'Arrow'),style:Object.assign(clone(D.edge),p.style),label:Object.assign(clone(D.label),p.label||{})});saveEP()}apCache.clear();setSel([]);commit();fit();toast('Opened '+file.name)}
+    mergePresets(j);apCache.clear();setSel([]);commit();fit();toast('Opened '+file.name)}
   catch(_){toast('That file isn’t a Linework diagram. Choose a .json file saved from here.')}};
 $('#zIn').onclick=()=>zoomCenter(1.2);$('#zOut').onclick=()=>zoomCenter(1/1.2);$('#zFit').onclick=fit;
 $('#zPct').onclick=()=>zoomCenter(1/view.z);
