@@ -1097,7 +1097,7 @@ svg.addEventListener('pointerdown',ev=>{
   if(ev.pointerType==='touch'){touches.set(ev.pointerId,{x:ev.clientX,y:ev.clientY});if(touches.size===2){startPinch();return}}
   svg.setPointerCapture(ev.pointerId);
   const now=performance.now(),dbl=now-lastDown.t<380&&Math.hypot(ev.clientX-lastDown.x,ev.clientY-lastDown.y)<8;
-  lastDown={t:dbl?0:now,x:ev.clientX,y:ev.clientY};
+  lastDown={t:dbl?0:now,x:ev.clientX,y:ev.clientY};clearTimeout(cycleT);
   const q=s=>t.closest?t.closest(s):null;
   const hEl=q('[data-handle]'),portEl=q('[data-port]'),eportEl=q('[data-eport]'),endEl=q('[data-endpoint]'),labEl=q('[data-label]'),edgeEl=q('[data-edge]'),nodeEl=q('[data-node]');
   /* right button: drag pans, a click without moving opens the context menu */
@@ -1127,16 +1127,29 @@ svg.addEventListener('pointerdown',ev=>{
   if(endEl&&structure()&&ev.altKey){const q=edgeById(endEl.dataset.endpoint)?.[endEl.dataset.which];
     if(q&&q.node){tmpEdge=newEdge(clone(q),{x:p.x,y:p.y});tmpEdge.id='__tmp';drag={kind:'newEdge',p0:p,moved:false};render();return}}
   if(endEl){const e=edgeById(endEl.dataset.endpoint),w=endEl.dataset.which;drag={kind:'endpoint',id:e.id,which:w,moved:false,was:e[w].node||null};return}
+  /* the selected thing is under something else here: keep working on it (a click goes one further down, a drag moves it) */
+  if((labEl||edgeEl||nodeEl)&&!ev.shiftKey&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey&&sel.size===1){const cur=[...sel][0],top=labEl?labEl.dataset.label:nodeEl&&!edgeEl?nodeEl.dataset.node:edgeEl?edgeEl.dataset.edge:nodeEl.dataset.node;
+    if(cur!==top&&underPoint(ev.clientX,ev.clientY).includes(cur)){startMove(p,nodeById(cur)?cur:null);drag.cycle={id:cur,cx:ev.clientX,cy:ev.clientY};return}}
   if(labEl){const id=labEl.dataset.label;if(!sel.has(id)||!ev.shiftKey)setSel(ev.shiftKey?[...sel,id]:[id]);drag={kind:'label',id,p0:p,moved:false};return}
-  if(edgeEl){const id=edgeEl.dataset.edge;if(ev.shiftKey){sel.has(id)?sel.delete(id):sel.add(id);onSel()}else if(!sel.has(id))setSel([id]);startMove(p,null);return}
+  if(edgeEl){const id=edgeEl.dataset.edge,again=!ev.shiftKey&&sel.size===1&&sel.has(id);if(ev.shiftKey){sel.has(id)?sel.delete(id):sel.add(id);onSel()}else if(!sel.has(id))setSel([id]);startMove(p,null);if(again)drag.cycle={id,cx:ev.clientX,cy:ev.clientY};return}
   if(nodeEl&&ev.altKey){const n=nodeById(nodeEl.dataset.node);if(!sel.has(n.id)||sel.size>1)setSel([n.id]);drag={kind:'text',id:n.id,p0:p,o:{x:n.tx||0,y:n.ty||0},moved:false};svg.style.cursor='move';return}
-  if(nodeEl){const id=nodeEl.dataset.node;
+  if(nodeEl){const id=nodeEl.dataset.node,again=!ev.shiftKey&&!ev.ctrlKey&&!ev.metaKey&&sel.size===1&&sel.has(id);
     if(ev.shiftKey||ev.ctrlKey||ev.metaKey){if(sel.has(id)){sel.delete(id);onSel();drag=null;return}sel.add(id);onSel()}
     else if(!sel.has(id))setSel([id]);
-    startMove(p,id);return}
+    startMove(p,id);if(again)drag.cycle={id,cx:ev.clientX,cy:ev.clientY};return}
   if(ev.pointerType==='touch'){drag={kind:'pan',sx:ev.clientX,sy:ev.clientY,vx:view.x,vy:view.y,tapClear:true};return}
   drag={kind:'marquee',base:ev.shiftKey?new Set(sel):new Set()};marquee={x0:p.x,y0:p.y,x1:p.x,y1:p.y};if(!ev.shiftKey)setSel([]);
 });
+/* overlapping things: clicking the selected one again (without dragging) selects what's under it at that spot,
+   then the next one down, and round again. It waits out the double-click time so double-click still edits. */
+let cycleT=0;
+function underPoint(cx,cy){const out=[];
+  for(const el of document.elementsFromPoint(cx,cy)){if(!svg.contains(el))continue;const n=el.closest('[data-node]'),l=el.closest('[data-label]'),e=el.closest('[data-edge]');
+    const id=n?n.dataset.node:l?l.dataset.label:e?e.dataset.edge:null;if(id&&!out.includes(id)&&(nodeById(id)||edgeById(id)))out.push(id)}
+  return out}
+function selectBelow(ids,cur){if(ids.length<2)return false;const i=ids.indexOf(cur),next=ids[(i+1)%ids.length];if(!nodeById(next)&&!edgeById(next))return false;
+  setSel([next]);render();const n=nodeById(next),nm=n?(String(n.text).trim().split(String.fromCharCode(10))[0].trim().slice(0,30)||SHAPES[n.type].name):'Arrow';
+  toast(`Selected “${nm}” (${ids.indexOf(next)+1} of ${ids.length} here). Click it again to go further down.`);return true}
 function startMove(p,grab){
   const orig=new Map();for(const n of selNodes())orig.set(n.id,{x:n.x,y:n.y});
   const free=[];for(const e of selEdges())for(const k of ['from','to'])if(loose(e[k]))free.push({e,k,x:e[k].x,y:e[k].y});
@@ -1215,6 +1228,7 @@ function endPointer(ev){
   if(d.kind==='newEdge'){const e=tmpEdge;tmpEdge=null;if(d.moved){e.id=uid('e');if(!(e.to.node===e.from.node&&e.to.side==='auto')){doc.edges.push(e);setSel([e.id]);commit()}}}
   else if(d.kind==='marquee'){marquee=null}
   else if(d.kind==='pan'){svg.style.cursor=spaceDown?'grab':'default';if(d.tapClear)setSel([]);if(d.ctx&&d.still){openCtx(ev.clientX,ev.clientY,d.ctx);return}saveLocal()}
+  else if(d.kind==='move'&&!d.moved&&d.cycle){const c=d.cycle;cycleT=setTimeout(()=>{if(!editing&&sel.size===1&&sel.has(c.id))selectBelow(underPoint(c.cx,c.cy),c.id)},300)}
   else if(d.kind==='endpoint'){const e=edgeById(d.id),now=e&&e[d.which].node;
     /* a structure diagram's arrow moved to another box: the hierarchy changed, so re-tidy the tree if that's on */
     if(d.moved&&now&&now!==d.was&&e.from.node&&e.to.node&&structure()&&doc.canvas.sTidy&&arrangeTree(true))toast('Moved. The tree re-tidied for the new hierarchy; Ctrl+Z undoes it.');commit()}
@@ -1507,7 +1521,7 @@ function canvasPanel(){
   +pane('canvas','presets',presetSec(false)+edgePresetSec(false))
   +pane('canvas','help',sec('How to',`<p class="tip">Click a shape on the left to add it, or drag it onto the canvas. Hover a shape and drag one of its blue dots to draw an arrow. Drop the arrow on a dot or along an edge to pin it there, or anywhere inside a shape to let it pick the nearest side. Arrows have dots too: drop an arrow on another arrow to join it there (it stays joined when things move or get cleaned up), or drag from an arrow's dot to branch off it. Double-click an arrow to give it a label such as Yes or No.</p>`)
   +sec('Tour','<p class="tip">A one-minute walk through every feature.</p><div class="acts"><button class="btn outline" data-act="tour">Show the tour</button></div>')+sec('About','<p class="tip">Linework is free. Signing in with Google saves your charts online, privately. See the <a href="privacy.html" target="_blank">privacy policy</a>.</p>')
-  +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Enter / Esc</dt><dd>Finish editing</dd><dt>Shift+Enter</dt><dd>New line in text</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste at the pointer, duplicate</dd><dt>Ctrl+S</dt><dd>Save to My charts</dd><dt>Ctrl+Shift+S</dt><dd>Save as a file</dd><dt>Tab</dt><dd>Add a box under the selected one (structure diagrams)</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Drag an arrow's end</dt><dd>Re-attach it (structure diagrams: changes the hierarchy)</dd><dt>Alt+drag an arrow's end</dt><dd>New branch from that spot (structure diagrams)</dd><dt>Resize with several selected</dt><dd>Resizes them all by the same amount</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
+  +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Enter / Esc</dt><dd>Finish editing</dd><dt>Shift+Enter</dt><dd>New line in text</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Click a selected shape again</dt><dd>Select what’s underneath it</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste at the pointer, duplicate</dd><dt>Ctrl+S</dt><dd>Save to My charts</dd><dt>Ctrl+Shift+S</dt><dd>Save as a file</dd><dt>Tab</dt><dd>Add a box under the selected one (structure diagrams)</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Drag an arrow's end</dt><dd>Re-attach it (structure diagrams: changes the hierarchy)</dd><dt>Alt+drag an arrow's end</dt><dd>New branch from that spot (structure diagrams)</dd><dt>Resize with several selected</dt><dd>Resizes them all by the same amount</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
 }
 function renderInspector(){
   const ns=selNodes(),es=selEdges();
@@ -2126,6 +2140,7 @@ function openCtx(cx,cy,t){
     if(ns.length&&structure()){const {kids,depth}=treeInfo();if(ns.some(n=>depth.has(n.id))){const pick=k=>()=>{const ids=treePick(k,ns);setSel(ids);render();toast(`Selected ${ids.length} box${ids.length===1?'':'es'}. Drag one’s handle to resize them all.`)};
       I('Select branch',pick('branch'),{dis:!ns.some(n=>kids.get(n.id)?.length)});I('Select level',pick('level'))}}
     if(ns.length>1)I('Make same size',()=>{sizeShapes(ns,Math.max(...ns.map(n=>n.w)),Math.max(...ns.map(n=>n.h)));ch()});
+    {const under=sel.size===1?underPoint(cx,cy):[];if(under.length>1)I('Select what’s underneath',()=>selectBelow(under,[...sel][0]),{title:'Click a selected shape again to do the same'})}
     if(sel.size===1)I(ns.length?'Edit text':'Edit label',()=>ns.length?startEdit('node',ns[0].id,true):startEdit('label',es[0].id,true),{kbd:'Enter'});
     I('Cut',()=>{if(copySel())deleteSel()},{kbd:MOD+'X'});I('Copy',()=>{if(copySel())toast('Copied')},{kbd:MOD+'C'});
     I('Duplicate',()=>{if(copySel())paste(gsz())},{kbd:MOD+'D'});I('Delete',deleteSel,{kbd:'Del',cls:'danger'});
