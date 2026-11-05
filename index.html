@@ -793,10 +793,11 @@ function uiSVG(){
   const ns=selNodes();
   for(const n of ns){const p=3/z;s+=`<rect x="${f(n.x-p)}" y="${f(n.y-p)}" width="${f(n.w+2*p)}" height="${f(n.h+2*p)}" fill="none" stroke="${SEL}" stroke-width="${f(1.25/z)}" pointer-events="none"/>`}
   const resizing=drag&&drag.kind==='resize';
-  if(ns.length===1&&sel.size===1&&!(drag&&drag.kind==='move'&&drag.moved)){
-    const n=ns[0],hs=8/z,p=3/z,X=[n.x-p,n.x+n.w/2,n.x+n.w+p],Y=[n.y-p,n.y+n.h/2,n.y+n.h+p];
+  /* one shape: its handles. Several: handles on each, and dragging any of them resizes them all */
+  if(ns.length&&(ns.length>1||sel.size===1)&&!(drag&&drag.kind==='move'&&drag.moved))for(const n of ns){
+    const hs=8/z,p=3/z,X=[n.x-p,n.x+n.w/2,n.x+n.w+p],Y=[n.y-p,n.y+n.h/2,n.y+n.h+p];
     const H=[['nw',0,0],['n',1,0],['ne',2,0],['e',2,1],['se',2,2],['s',1,2],['sw',0,2],['w',0,1]];
-    for(const [k,i,j] of H)s+=`<rect data-handle="${k}" x="${f(X[i]-hs/2)}" y="${f(Y[j]-hs/2)}" width="${f(hs)}" height="${f(hs)}" rx="${f(1.5/z)}" fill="#fff" stroke="${SEL}" stroke-width="${f(1.25/z)}" style="cursor:${k}-resize"/>`;
+    for(const [k,i,j] of H)s+=`<rect data-handle="${k}" data-hid="${n.id}" x="${f(X[i]-hs/2)}" y="${f(Y[j]-hs/2)}" width="${f(hs)}" height="${f(hs)}" rx="${f(1.5/z)}" fill="#fff" stroke="${SEL}" stroke-width="${f(1.25/z)}" style="cursor:${k}-resize"/>`;
   }
   const dragging=drag&&(drag.kind==='newEdge'||drag.kind==='endpoint');
   const portIds=new Set();
@@ -858,7 +859,7 @@ function flushAll(){flush();writeLocal();if(lib&&lib.state==='ok'){clearTimeout(
 addEventListener('pagehide',flushAll);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushAll()});
 function normalize(d){
   const D=baseDefaults();d=d||{};d.nodes=Array.isArray(d.nodes)?d.nodes:[];d.edges=Array.isArray(d.edges)?d.edges:[];
-  d.canvas=Object.assign({bg:'#FFFFFF',bgOpacity:1,grid:true,snap:true,gridSize:20,mode:'flow',sHeads:'none',sRoute:'orthogonal',sDir:'tb'},d.canvas||{});
+  d.canvas=Object.assign({bg:'#FFFFFF',bgOpacity:1,grid:true,snap:true,gridSize:20,mode:'flow',sHeads:'none',sRoute:'orthogonal',sDir:'tb',sTidy:true},d.canvas||{});
   d.defaults=d.defaults||{};d.defaults.node=Object.assign(D.node,d.defaults.node||{});d.defaults.edge=Object.assign(D.edge,d.defaults.edge||{});d.defaults.label=Object.assign(D.label,d.defaults.label||{});
   d.nodes=d.nodes.filter(n=>n&&SHAPES[n.type]);
   for(const n of d.nodes){n.style=Object.assign(clone(D.node),SHAPES[n.type].style||{},n.style||{});n.text=n.text??'';n.tx=+n.tx||0;n.ty=+n.ty||0;n.w=+n.w||100;n.h=+n.h||60;n.x=+n.x||0;n.y=+n.y||0}
@@ -959,15 +960,22 @@ function addChild(par){const lr=doc.canvas.sDir==='lr',G=gsz();
   else{n.y=par.y+par.h+G*4;if(kids.length)n.x=Math.max(...kids.map(c=>c.x+c.w))+G*2}
   doc.nodes.push(n);doc.edges.push(newEdge({node:par.id,side:lr?'right':'bottom',t:.5},{node:n.id,side:lr?'left':'top',t:.5}));
   setSel([n.id]);commit();render();startEdit('node',n.id,true);return n}
-/* tidy tree layout: each shape centred over its children, levels evenly spaced; the first root stays put */
-function arrangeTree(){const lr=doc.canvas.sDir==='lr',G=gsz(),gapS=G*2,gapL=G*4,N=id=>nodeById(id);
-  const kids=new Map(),par=new Map();
+/* the hierarchy the arrows make: each shape's parent (the first arrow into it) and children, loops broken,
+   and each shape's depth (0 = a top box). Shapes with no arrows to or from other shapes aren't in it. */
+function treeInfo(){const N=id=>nodeById(id),kids=new Map(),par=new Map();
   for(const e of doc.edges){const a=e.from.node,b=e.to.node;if(!a||!b||a===b||par.has(b)||!N(a)||!N(b))continue;par.set(b,a);if(!kids.has(a))kids.set(a,[]);kids.get(a).push(b)}
   for(const b of [...par.keys()]){const seen=new Set([b]);for(let x=par.get(b);x!=null;x=par.get(x)){if(seen.has(x)){const l=kids.get(par.get(b));l.splice(l.indexOf(b),1);par.delete(b);break}seen.add(x)}}
+  const depth=new Map(),walk=(id,d)=>{depth.set(id,d);for(const k of kids.get(id)||[])walk(k,d+1)};
+  for(const n of doc.nodes)if(!par.has(n.id)&&kids.get(n.id)?.length)walk(n.id,0);
+  return{kids,par,depth}}
+/* tidy tree layout: each shape centred over its children, levels evenly spaced; the first root stays put.
+   quiet: used after sizes change; no toast, no zoom, no undo step of its own (the caller commits). */
+function arrangeTree(quiet){const lr=doc.canvas.sDir==='lr',G=gsz(),gapS=G*2,gapL=G*4,N=id=>nodeById(id);
+  const {kids,par}=treeInfo();
   const A=n=>lr?n.h:n.w,B=n=>lr?n.w:n.h,pos=n=>lr?n.y:n.x;
   for(const l of kids.values())l.sort((a,b)=>pos(N(a))-pos(N(b)));
   const roots=doc.nodes.filter(n=>!par.has(n.id)&&kids.get(n.id)?.length).sort((a,b)=>pos(a)-pos(b));
-  if(!roots.length){toast('Nothing to arrange yet. Connect a shape to the boxes under it first (select it and press Tab).');return}
+  if(!roots.length){if(!quiet)toast('Nothing to arrange yet. Connect a shape to the boxes under it first (select it and press Tab).');return false}
   const span=new Map(),sp=id=>{if(!span.has(id)){const c=kids.get(id)||[];span.set(id,Math.max(A(N(id)),c.reduce((t,k)=>t+sp(k),0)+gapS*Math.max(0,c.length-1)))}return span.get(id)};
   const depth=new Map(),lvl=[],walk=(id,d)=>{depth.set(id,d);lvl[d]=Math.max(lvl[d]||0,B(N(id)));for(const k of kids.get(id)||[])walk(k,d+1)};
   for(const r of roots)walk(r.id,0);
@@ -978,7 +986,27 @@ function arrangeTree(){const lr=doc.canvas.sDir==='lr',G=gsz(),gapS=G*2,gapL=G*4
     let s0=mid-(c.reduce((t,k)=>t+sp(k),0)+gapS*Math.max(0,c.length-1))/2;for(const k of c){place(k,s0);s0+=sp(k)+gapS}};
   let at=pos(r0)+A(r0)/2-sp(r0.id)/2;for(const r of roots){place(r.id,at);at+=sp(r.id)+gapS*2}
   for(const e of doc.edges)if(e.from.node&&e.to.node&&par.get(e.to.node)===e.from.node){e.from={node:e.from.node,side:lr?'right':'bottom',t:.5};e.to={node:e.to.node,side:lr?'left':'top',t:.5}}
-  commit();fit();toast('Arranged as a tree. Press Ctrl+Z to undo.')}
+  if(quiet)return true;
+  commit();fit();toast('Arranged as a tree. Press Ctrl+Z to undo.');return true}
+/* sizes changed: re-tidy the tree if that's switched on and any of these shapes is part of it */
+function tidyAfterSize(ids){if(!structure()||!doc.canvas.sTidy)return false;const {par,kids}=treeInfo();
+  return ids.some(id=>par.has(id)||kids.get(id)?.length)&&arrangeTree(true)}
+/* hierarchy selections: a shape's whole branch, its level, its children, its parent */
+function treePick(kind,ns){const {kids,par,depth}=treeInfo(),out=new Set();
+  const down=id=>{out.add(id);for(const k of kids.get(id)||[])down(k)};
+  for(const n of ns){
+    if(kind==='branch')down(n.id);
+    else if(kind==='kids')for(const k of kids.get(n.id)||[])out.add(k);
+    else if(kind==='parent'){if(par.has(n.id))out.add(par.get(n.id))}
+    else if(kind==='level'&&depth.has(n.id)){const d=depth.get(n.id);for(const [id,x] of depth)if(x===d)out.add(id)}}
+  return[...out]}
+/* resize shapes to w × h (either may be null to leave it), each keeping its centre */
+function sizeShapes(ns,w,h){for(const n of ns){if(w!=null){n.x+=(n.w-w)/2;n.w=w}if(h!=null){n.y+=(n.h-h)/2;n.h=h}}tidyAfterSize(ns.map(n=>n.id))}
+/* light fills, one per level of the hierarchy (text colours stay as they are) */
+const LEVEL_FILLS=['#DCE6F7','#DCEFE4','#FBEBC8','#EADCF5','#F8DADA','#D7EEF2'];
+function colourLevels(){const {depth}=treeInfo();if(!depth.size){toast('Nothing to colour yet. Connect a shape to the boxes under it first (select it and press Tab).');return}
+  for(const [id,d] of depth){const n=nodeById(id);n.style.fill=LEVEL_FILLS[d%LEVEL_FILLS.length];n.style.fillOpacity=1}
+  commit();render();renderInspector();toast('Coloured each level. Press Ctrl+Z to undo.')}
 /* the diagram type's connector look, applied to every arrow when it changes */
 function structApply(p){const c=doc.canvas;
   if(c.mode==='structure')for(const e of doc.edges){e.style.endHead=c.sHeads==='arrow'?'arrow':'none';e.style.route=c.sRoute}
@@ -1088,7 +1116,8 @@ svg.addEventListener('pointerdown',ev=>{
     lp.t=setTimeout(()=>{lp.t=0;if(touches.size!==1)return;
       if(drag&&drag.kind==='move')for(const [id,o] of drag.orig){const n=nodeById(id);if(n){n.x=o.x;n.y=o.y}}
       drag=null;tmpEdge=null;marquee=null;guides=[];snapHint=null;render();openCtx(c.x,c.y,t);navigator.vibrate?.(12)},520)}
-  if(hEl){const n=selNodes()[0];drag={kind:'resize',h:hEl.dataset.handle,id:n.id,o:{x:n.x,y:n.y,w:n.w,h:n.h},p0:p};return}
+  if(hEl){const ns=selNodes(),n=nodeById(hEl.dataset.hid)||ns[0],R=m=>({x:m.x,y:m.y,w:m.w,h:m.h});
+    drag={kind:'resize',h:hEl.dataset.handle,id:n.id,o:R(n),p0:p,others:new Map(ns.filter(m=>m!==n).map(m=>[m.id,R(m)]))};return}
   if(portEl){const id=portEl.dataset.port,side=portEl.dataset.side;tmpEdge=newEdge({node:id,side,t:.5},{x:p.x,y:p.y});tmpEdge.id='__tmp';drag={kind:'newEdge',p0:p,moved:false};render();return}
   if(eportEl){const id=eportEl.dataset.eport,t=+eportEl.dataset.t,h=edgeById(id),g=geom.get(id);if(h&&g){const c=pointAt(g.pts,t);
     tmpEdge=newEdge({edge:id,t,x:c.x,y:c.y},{x:p.x,y:p.y});tmpEdge.id='__tmp';drag={kind:'newEdge',p0:p,moved:false,skip:skipFor(id)};render();return}}
@@ -1164,7 +1193,13 @@ svg.addEventListener('pointermove',ev=>{
       if(snapOn()&&!ev.altKey){if(h.includes('w'))x0=snapV(x0);if(h.includes('e'))x1=snapV(x1);if(h.includes('n'))y0=snapV(y0);if(h.includes('s'))y1=snapV(y1)}
       const M=16;if(x1-x0<M){if(h.includes('w'))x0=x1-M;else x1=x0+M}if(y1-y0<M){if(h.includes('n'))y0=y1-M;else y1=y0+M}
       if(ev.shiftKey&&h.length===2){const k=Math.max((x1-x0)/o.w,(y1-y0)/o.h);const w=o.w*k,hh=o.h*k;if(h.includes('w'))x0=x1-w;else x1=x0+w;if(h.includes('n'))y0=y1-hh;else y1=y0+hh}
-      n.x=x0;n.y=y0;n.w=x1-x0;n.h=y1-y0;render();syncInspector();break}
+      n.x=x0;n.y=y0;n.w=x1-x0;n.h=y1-y0;
+      /* the other selected shapes change by the same amount (Shift on a corner: by the same proportion), from the same side */
+      const kx=n.w/o.w,ky=n.h/o.h,prop=ev.shiftKey&&h.length===2;
+      for(const [id,q] of drag.others){const m=nodeById(id);if(!m)continue;
+        const W=Math.max(M,prop?q.w*kx:q.w+n.w-o.w),Hh=Math.max(M,prop?q.h*ky:q.h+n.h-o.h);
+        m.x=h.includes('w')?q.x+q.w-W:h.includes('e')?q.x:q.x+(q.w-W)/2;m.y=h.includes('n')?q.y+q.h-Hh:h.includes('s')?q.y:q.y+(q.h-Hh)/2;m.w=W;m.h=Hh}
+      render();syncInspector();break}
     case 'newEdge':{drag.moved=true;const s=findSnap(p,null,drag.skip);snapHint=s;tmpEdge.to=s?s.end:{x:p.x,y:p.y};render();break}
     case 'endpoint':{drag.moved=true;const e=edgeById(drag.id);const s=findSnap(p,null,skipFor(drag.id));snapHint=s;e[drag.which]=s?s.end:{x:snapOn()?snapV(p.x):p.x,y:snapOn()?snapV(p.y):p.y};render();break}
     case 'text':{const n=nodeById(drag.id);if(!n)break;drag.moved=true;const r=v=>ev.shiftKey?Math.round(v/10)*10:Math.round(v);n.tx=r(drag.o.x+p.x-drag.p0.x);n.ty=r(drag.o.y+p.y-drag.p0.y);render();syncInspector();break}
@@ -1178,6 +1213,8 @@ function endPointer(ev){
   if(d.kind==='newEdge'){const e=tmpEdge;tmpEdge=null;if(d.moved){e.id=uid('e');if(!(e.to.node===e.from.node&&e.to.side==='auto')){doc.edges.push(e);setSel([e.id]);commit()}}}
   else if(d.kind==='marquee'){marquee=null}
   else if(d.kind==='pan'){svg.style.cursor=spaceDown?'grab':'default';if(d.tapClear)setSel([]);if(d.ctx&&d.still){openCtx(ev.clientX,ev.clientY,d.ctx);return}saveLocal()}
+  else if(d.kind==='resize'){const o=d.o,n=nodeById(d.id),ch=n&&(n.w!==o.w||n.h!==o.h);
+    if(ch&&tidyAfterSize([d.id,...d.others.keys()]))toast('Tree re-tidied for the new sizes. Ctrl+Z undoes it.');commit()}
   else commit();
   guides=[];snapHint=null;nearE=null;onSel();render();
 }
@@ -1396,12 +1433,20 @@ function showTab(k,v){tabs[k]=v;try{localStorage.setItem('linework.tabs',JSON.st
   for(const p of insp.querySelectorAll(`[data-pk="${k}"]`))p.hidden=p.dataset.pv!==v}
 const DASH=[['solid','Solid'],['dashed','Dashed'],['dotted','Dotted'],['dashdot','Dash-dot'],['long','Long dash']];
 const HEADS=[['none','None'],['arrow','Arrow'],['stealth','Sharp arrow'],['open','Open arrow'],['diamond','Diamond'],['diamondOpen','Hollow diamond'],['circle','Dot'],['circleOpen','Hollow circle'],['bar','Bar']];
+/* structure diagrams: pick out parts of the hierarchy, and size a whole level at once */
+function hierSec(ns){const {kids,par,depth}=treeInfo(),inT=ns.some(n=>depth.has(n.id));
+  const B=(act,label,title,on)=>`<button class="btn outline" data-act="${act}" title="${title}"${on?'':' disabled'}>${label}</button>`;
+  const lv=ns.length===1&&depth.has(ns[0].id)?treePick('level',ns).length:0;
+  return sec('Hierarchy',`<div class="acts">${B('pick-branch','Select branch','This box and everything under it',ns.some(n=>kids.get(n.id)?.length))}${B('pick-level','Select level','Every box at the same level',inT)}${B('pick-kids','Select children','The boxes directly under it',ns.some(n=>kids.get(n.id)?.length))}${B('pick-parent','Select parent','The box it hangs from',ns.some(n=>par.has(n.id)))}</div>`
+    +(ns.length===1?`<div class="acts">${B('level-size','Make its level this size','Every box at this level takes this box’s width and height',lv>1)}</div>`:'')
+    +`<p class="tip">${inT?'Select a branch or a level, then drag one box’s handle to resize them all.':'Join this box to others (select a box and press <b>Tab</b>) to use these.'}${doc.canvas.sTidy?' The tree re-tidies when sizes change (Canvas → General).':''}</p>`)}
 function nodePanel(ns){
   const multi=ns.length>1,rect=ns.some(n=>SHAPES[n.type].rect);
   const head=`<div class="insp-head"><h2>${multi?ns.length+' shapes':SHAPES[ns[0].type].name}</h2><small>${multi?'':'shape'}</small></div>`;
   const tb=tabBar('node',[['style','Style'],['presets','Presets']]);
-  let h=sec('Shape',selG('Type','node','type',typeGroups())+(multi?'':`<div class="xywh">${['x','y','w','h'].map(k=>`<label>${k.toUpperCase()}<input type="number" class="inp" id="${fid('node',k)}" ${A('node',k)} step="1"></label>`).join('')}</div>`)
+  let h=sec('Shape',selG('Type','node','type',typeGroups())+(multi?`<div class="xywh">${['w','h'].map(k=>`<label>${k==='w'?'Width':'Height'}<input type="number" class="inp" id="${fid('node',k)}" ${A('node',k)} data-mix="1" step="1" min="8"></label>`).join('')}</div><p class="tip">Sets every selected shape, each keeping its centre. You can also drag any selected shape's handle to resize them all.</p><div class="acts"><button class="btn outline" data-act="same-w" title="Make them all as wide as the widest">Same width</button><button class="btn outline" data-act="same-h" title="Make them all as tall as the tallest">Same height</button><button class="btn outline" data-act="same-wh" title="Make them all the size of the largest">Same size</button></div>`:`<div class="xywh">${['x','y','w','h'].map(k=>`<label>${k.toUpperCase()}<input type="number" class="inp" id="${fid('node',k)}" ${A('node',k)} step="1"></label>`).join('')}</div>`)
     +`<div class="acts"><button class="btn outline" data-act="fitText">Fit height to text</button></div>`);
+  if(structure())h+=hierSec(ns);
   if(multi)h+=sec('Align',`<div class="acts"><div class="seg" role="group" aria-label="Align">${[['left','oL','Align left edges'],['center','oC','Align centres'],['right','oR','Align right edges'],['top','oT','Align tops'],['middle','oM','Align middles'],['bottom','oB','Align bottoms']].map(a=>`<button type="button" data-act="al-${a[0]}" title="${a[2]}" aria-label="${a[2]}">${ico(a[1])}</button>`).join('')}</div>${ns.length>2?`<div class="seg" role="group" aria-label="Distribute"><button type="button" data-act="dist-h" title="Distribute horizontally" aria-label="Distribute horizontally">${ico('dH')}</button><button type="button" data-act="dist-v" title="Distribute vertically" aria-label="Distribute vertically">${ico('dV')}</button></div>`:''}</div>`);
   h+=sec('Text',(multi?'':`<textarea class="inp" id="${fid('node','text')}" ${A('node','text')} rows="3" aria-label="Shape text" placeholder="Type the text for this shape"></textarea>`)
     +selG('Font','node','style.fontFamily',fontGroups())+rangeF('Size','node','style.fontSize',6,96,1)+chkF('node','style.autoSize','Auto-size to fit shape')+colorF('Colour','node','style.color')
@@ -1450,14 +1495,14 @@ function canvasPanel(){
       +(structure()?segF('Connectors','canvas','sHeads',[['none','Lines','Plain lines'],['arrow','Arrows','Lines with arrowheads']])
         +segF('Branches','canvas','sRoute',[['orthogonal','Tree','Right-angled lines sharing one trunk'],['straight','Straight','Straight lines fanning out']])
         +segF('Direction','canvas','sDir',[['tb','Down','Top to bottom'],['lr','Across','Left to right']])
-        +`<p class="tip">Drag from a shape's dot as many times as you like: each drag adds a branch. Select a shape and press <b>Tab</b> to add a box under it. To move an arrow's end that sits on a shape, <b>Alt+drag</b> it.</p><div class="acts"><button class="btn outline" data-act="tree">Arrange as tree</button></div>`
+        +`<p class="tip">Drag from a shape's dot as many times as you like: each drag adds a branch. Select a shape and press <b>Tab</b> to add a box under it. To move an arrow's end that sits on a shape, <b>Alt+drag</b> it.</p><div class="acts"><button class="btn outline" data-act="tree">Arrange as tree</button><button class="btn outline" data-act="levels" title="Give each level of the hierarchy its own light fill">Colour by level</button></div><label class="chk"><input type="checkbox" id="f-canvas-sTidy" ${A('canvas','sTidy')}>Re-tidy the tree when box sizes change</label><p class="tip">To resize many boxes at once, select them (drag a box around them, or select one and use <b>Select level</b> or <b>Select branch</b>), then drag any one's handle.</p>`
       :`<p class="tip">Making a hierarchy chart, such as a top-down design or a structure diagram? Switch to <b>Structure</b>: one box can branch into many, with plain lines and a tidy tree layout.</p>`))
     +sec('Background',colorF('Colour','canvas','bg')+rangeF('Opacity %','canvas','bgOpacity',0,100,1,100)+`<p class="tip">At 0% opacity, PNG exports have a transparent background, which sits cleanly on any Word page colour.</p><div class="acts"><button class="btn outline" data-act="invert">Invert diagram colours</button></div><p class="tip">Flips every colour in the diagram from light to dark (or back), keeping the hues. Pair it with dark mode for a dark diagram.</p>`)
     +sec('Grid',`<label class="chk"><input type="checkbox" id="f-canvas-grid" ${A('canvas','grid')}>Show grid</label><label class="chk"><input type="checkbox" id="f-canvas-snap" ${A('canvas','snap')}>Snap to grid</label>`+rangeF('Grid size','canvas','gridSize',5,80,5)))
   +pane('canvas','presets',presetSec(false)+edgePresetSec(false))
   +pane('canvas','help',sec('How to',`<p class="tip">Click a shape on the left to add it, or drag it onto the canvas. Hover a shape and drag one of its blue dots to draw an arrow. Drop the arrow on a dot or along an edge to pin it there, or anywhere inside a shape to let it pick the nearest side. Arrows have dots too: drop an arrow on another arrow to join it there (it stays joined when things move or get cleaned up), or drag from an arrow's dot to branch off it. Double-click an arrow to give it a label such as Yes or No.</p>`)
   +sec('Tour','<p class="tip">A one-minute walk through every feature.</p><div class="acts"><button class="btn outline" data-act="tour">Show the tour</button></div>')+sec('About','<p class="tip">Linework is free. Signing in with Google saves your charts online, privately. See the <a href="privacy.html" target="_blank">privacy policy</a>.</p>')
-  +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Enter / Esc</dt><dd>Finish editing</dd><dt>Shift+Enter</dt><dd>New line in text</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste at the pointer, duplicate</dd><dt>Ctrl+S</dt><dd>Save to My charts</dd><dt>Ctrl+Shift+S</dt><dd>Save as a file</dd><dt>Tab</dt><dd>Add a box under the selected one (structure diagrams)</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
+  +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Enter / Esc</dt><dd>Finish editing</dd><dt>Shift+Enter</dt><dd>New line in text</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste at the pointer, duplicate</dd><dt>Ctrl+S</dt><dd>Save to My charts</dd><dt>Ctrl+Shift+S</dt><dd>Save as a file</dd><dt>Tab</dt><dd>Add a box under the selected one (structure diagrams)</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Resize with several selected</dt><dd>Resizes them all by the same amount</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
 }
 function renderInspector(){
   const ns=selNodes(),es=selEdges();
@@ -1475,13 +1520,16 @@ function syncFields(root){
     if(el.type==='checkbox')el.checked=!!v;
     else if(el.type==='color')el.value=/^#[0-9a-f]{6}$/i.test(v)?v.toLowerCase():'#000000';
     else if(el.dataset.k==='hex')el.value=String(v||'').toUpperCase();
+    else if(el.dataset.mix&&targets(el.dataset.t).some(x=>Math.round(getP(x,el.dataset.p))!==Math.round(v))){el.value='';el.placeholder='Mixed'}
     else if(el.type==='range'||el.type==='number'){const n=(+v||0)*sc;el.value=['x','y','w','h','tx','ty'].includes(el.dataset.p)?Math.round(n):Math.round(n*100)/100}
     else el.value=v??'';
   }
 }
 function apply(t,p,v){
   if(t==='preset'){const o=pmCur();if(!o)return;setP(o,p,v);pmSave();pmRefresh();pushPreset(o,p,v);render();softCommit();return}
-  for(const o of targets(t)){
+  const T=targets(t);
+  if(t==='node'&&(p==='w'||p==='h')&&T.length>1){sizeShapes(T,p==='w'?v:null,p==='h'?v:null);render();syncInspector();softCommit();return}
+  for(const o of T){
     if(p==='type'&&o.type!==v){const d=SHAPES[v];o.type=v;if(d.style)Object.assign(o.style,d.style)}
     else setP(o,p,v);
   }
@@ -1489,6 +1537,8 @@ function apply(t,p,v){
   if(t==='edge'&&(p.startsWith('style.')||p.startsWith('label.style.')))targets(t).forEach(rememberEdge);
   if(p==='type')renderInspector();
   if(t==='canvas'&&['mode','sHeads','sRoute','sDir'].includes(p))structApply(p);
+  if(t==='node'&&(p==='w'||p==='h'))tidyAfterSize(T.map(n=>n.id));
+  if(t==='canvas'&&p==='sTidy'&&v)arrangeTree(true);
   if(p==='bg'&&t==='canvas'){/* keep label backgrounds that matched old bg in sync */}
   render();syncInspector();softCommit();
 }
@@ -1538,6 +1588,10 @@ insp.addEventListener('click',ev=>{
   else if(a==='front'){doc.nodes=[...doc.nodes.filter(n=>!sel.has(n.id)),...ns]}
   else if(a==='back'){doc.nodes=[...ns,...doc.nodes.filter(n=>!sel.has(n.id))]}
   else if(a==='tree'){arrangeTree();return}
+  else if(a==='levels'){colourLevels();return}
+  else if(a.startsWith('pick-')){const ids=treePick(a.slice(5),ns);if(ids.length){setSel(ids);render();toast(`Selected ${ids.length} box${ids.length===1?'':'es'}`)}return}
+  else if(a==='level-size'&&ns.length===1){const n=ns[0],l=treePick('level',[n]).map(nodeById).filter(m=>m&&m!==n);sizeShapes(l,n.w,n.h);tidyAfterSize([n.id])}
+  else if(a==='same-w'||a==='same-h'||a==='same-wh'){const W=Math.max(...ns.map(n=>n.w)),H=Math.max(...ns.map(n=>n.h));sizeShapes(ns,a==='same-h'?null:W,a==='same-w'?null:H)}
   else if(a==='dup'){if(copySel())paste(gsz());return}
   else if(a==='del'){deleteSel();return}
   else if(a==='nCopyStyle'){copyStyle(ns,es);toast('Shape style copied');renderInspector();return}
@@ -2064,6 +2118,9 @@ function openCtx(cx,cy,t){
   if(sel.size){
     head(ns.length&&es.length?sel.size+' items':ns.length>1?ns.length+' shapes':ns.length?SHAPES[ns[0].type].name:es.length>1?es.length+' arrows':'Arrow');
     if(ns.length===1&&sel.size===1&&structure())I('Add box under it',()=>addChild(ns[0]),{kbd:'Tab',cls:'feature'});
+    if(ns.length&&structure()){const {kids,depth}=treeInfo();if(ns.some(n=>depth.has(n.id))){const pick=k=>()=>{const ids=treePick(k,ns);setSel(ids);render();toast(`Selected ${ids.length} box${ids.length===1?'':'es'}. Drag one’s handle to resize them all.`)};
+      I('Select branch',pick('branch'),{dis:!ns.some(n=>kids.get(n.id)?.length)});I('Select level',pick('level'))}}
+    if(ns.length>1)I('Make same size',()=>{sizeShapes(ns,Math.max(...ns.map(n=>n.w)),Math.max(...ns.map(n=>n.h)));ch()});
     if(sel.size===1)I(ns.length?'Edit text':'Edit label',()=>ns.length?startEdit('node',ns[0].id,true):startEdit('label',es[0].id,true),{kbd:'Enter'});
     I('Cut',()=>{if(copySel())deleteSel()},{kbd:MOD+'X'});I('Copy',()=>{if(copySel())toast('Copied')},{kbd:MOD+'C'});
     I('Duplicate',()=>{if(copySel())paste(gsz())},{kbd:MOD+'D'});I('Delete',deleteSel,{kbd:'Del',cls:'danger'});
@@ -2343,7 +2400,7 @@ $('#exCopy').onclick=async()=>{if(!ex.blob||ex.fmt!=='png')return;const blob=ex.
    Shown once on a first visit, and from Canvas → Help any time. KEEP THIS IN STEP WITH THE APP:
    when a feature is added or changed, update (or add) its step here and bump TOUR_V so people
    who saw an older tour get the new one. */
-const TOUR_V=5;
+const TOUR_V=6;
 const tI=(d,extra='')=>`<svg viewBox="0 0 200 110" width="200" height="110" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
 const TOUR=[
   {t:'Welcome to Linework',art:tI('<rect x="70" y="8" width="60" height="22" rx="11"/><path d="M100 30v14"/><path d="M100 44l22 14-22 14-22-14z"/><path d="M100 72v14M122 58h30"/><rect x="72" y="86" width="56" height="18" rx="3"/><rect x="152" y="48" width="40" height="20" rx="3"/>'),
@@ -2353,7 +2410,7 @@ const TOUR=[
   {t:'Connect with arrows',at:'node',art:tI('<rect x="14" y="36" width="60" height="34" rx="4"/><circle cx="74" cy="53" r="5" fill="currentColor"/><path d="M80 53h52"/><path d="M128 47l9 6-9 6" fill="currentColor"/><rect x="138" y="36" width="50" height="34" rx="4"/>'),
    b:`<ul><li><b>Hover</b> a shape (like the highlighted one) to show its blue dots, then drag a dot onto another shape.</li><li>Arrows have dots too: drop an arrow onto another arrow to join it, or drag from an arrow's dot to branch off it. Joined arrows stay together when you move things or clean up.</li><li>An arrow can also end in empty space.</li><li><b>Double-click</b> an arrow to give it a label, such as Yes or No. Labels start centred on the line; drag them along it.</li><li>In the arrow's <b>Style</b> tab choose elbow, straight or curved, plus arrowheads and line style.</li></ul>`},
   {t:'Flowchart or structure diagram',at:'#insp',art:tI('<rect x="76" y="8" width="48" height="22" rx="3"/><path d="M100 30v14M40 44h120M40 44v14M100 44v14M160 44v14"/><rect x="16" y="58" width="48" height="22" rx="3"/><rect x="76" y="58" width="48" height="22" rx="3"/><rect x="136" y="58" width="48" height="22" rx="3"/><path d="M40 80v10M28 90h24M28 90v6M52 90v6"/>'),
-   b:`<ul><li>Making a hierarchy chart, like a top-down design? Click empty canvas, and under <b>General → Diagram type</b> choose <b>Structure</b>.</li><li>Then one box can branch into many: drag from the same dot again and again, or select a box and press <b>Tab</b> to add one under it.</li><li>Pick plain lines or arrows, a shared-trunk tree or straight lines, and <b>Arrange as tree</b> lines everything up neatly.</li></ul>`},
+   b:`<ul><li>Making a hierarchy chart, like a top-down design? Click empty canvas, and under <b>General → Diagram type</b> choose <b>Structure</b>.</li><li>Then one box can branch into many: drag from the same dot again and again, or select a box and press <b>Tab</b> to add one under it.</li><li>Pick plain lines or arrows, a shared-trunk tree or straight lines, and <b>Arrange as tree</b> lines everything up neatly. <b>Colour by level</b> shades each level of the hierarchy.</li><li>Resize many boxes at once: select them (or select one and right-click → <b>Select level</b> or <b>Select branch</b>), then drag any one’s handle. The tree re-tidies itself to fit the new sizes.</li></ul>`},
   {t:'Edit text in place',at:'node',art:tI('<rect x="40" y="26" width="120" height="50" rx="5"/><rect x="58" y="40" width="84" height="22" rx="3" stroke-dasharray="3 3"/><path d="M118 44v14"/><path d="M70 51h40" stroke-width="3"/>'),
    b:`<ul><li><b>Double-click</b> a shape or arrow label and type. Press <b>Enter</b> or click away to finish, and <b>Shift+Enter</b> for a new line.</li><li>To move text inside a shape, <b>Alt+drag</b> it, or use <b>Alt+arrow keys</b>. There are exact X/Y offsets in the Text section too.</li><li>Font, size, colour, <b>All caps</b> and <b>Text outline</b> are in the sidebar.</li></ul>`},
   {t:'Style it',at:'#insp',art:tI('<rect x="120" y="8" width="70" height="94" rx="6"/><path d="M130 22h22M158 22h22"/><path d="M130 40h50M130 56h50M130 72h34"/><rect x="14" y="34" width="80" height="40" rx="5" fill="currentColor" fill-opacity=".15"/>'),
