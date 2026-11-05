@@ -860,7 +860,7 @@ function flushAll(){flush();writeLocal();if(lib&&lib.state==='ok'){clearTimeout(
 addEventListener('pagehide',flushAll);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushAll()});
 function normalize(d){
   const D=baseDefaults();d=d||{};d.nodes=Array.isArray(d.nodes)?d.nodes:[];d.edges=Array.isArray(d.edges)?d.edges:[];
-  d.canvas=Object.assign({bg:'#FFFFFF',bgOpacity:1,grid:true,snap:true,gridSize:20,mode:'flow',sHeads:'none',sRoute:'orthogonal',sDir:'tb',sTidy:true},d.canvas||{});
+  d.canvas=Object.assign({bg:'#FFFFFF',bgOpacity:1,grid:true,snap:true,gridSize:20,mode:'flow',sHeads:'none',sRoute:'orthogonal',sDir:'tb',sTidy:true,sLayout:'tree'},d.canvas||{});
   d.defaults=d.defaults||{};d.defaults.node=Object.assign(D.node,d.defaults.node||{});d.defaults.edge=Object.assign(D.edge,d.defaults.edge||{});d.defaults.label=Object.assign(D.label,d.defaults.label||{});
   d.nodes=d.nodes.filter(n=>n&&SHAPES[n.type]);
   for(const n of d.nodes){n.style=Object.assign(clone(D.node),SHAPES[n.type].style||{},n.style||{});n.text=n.text??'';n.tx=+n.tx||0;n.ty=+n.ty||0;n.w=+n.w||100;n.h=+n.h||60;n.x=+n.x||0;n.y=+n.y||0}
@@ -957,9 +957,14 @@ function fitText(n){for(let i=0;i<3;i++){const L=nodeText(n),ins=insets(n);n.h=M
 function addChild(par){const lr=doc.canvas.sDir==='lr',G=gsz();
   const kids=doc.edges.filter(e=>e.from.node===par.id&&e.to.node&&e.to.node!==par.id).map(e=>nodeById(e.to.node)).filter(Boolean);
   const n={id:uid('n'),type:par.type,x:par.x,y:par.y,w:par.w,h:par.h,text:'',style:clone(par.style),tx:0,ty:0};if(par.preset)n.preset=par.preset;
-  if(lr){n.x=par.x+par.w+G*4;if(kids.length)n.y=Math.max(...kids.map(c=>c.y+c.h))+G*2}
+  doc.nodes.push(n);const e=newEdge({node:par.id,side:lr?'right':'bottom',t:.5},{node:n.id,side:lr?'left':'top',t:.5});doc.edges.push(e);
+  /* a heading that lists its children puts the new box at the end of the list; otherwise at the end of the row */
+  if(stackFor(par.id,treeInfo().kids)){e.from.t=listDrop(par);e.to.side=lr?'top':'left';
+    if(lr){n.y=par.y+listInd();n.x=kids.length?Math.max(...kids.map(c=>c.x+c.w))+G:par.x+par.w+G*2}
+    else{n.x=par.x+listInd();n.y=kids.length?Math.max(...kids.map(c=>c.y+c.h))+G:par.y+par.h+G*2}}
+  else if(lr){n.x=par.x+par.w+G*4;if(kids.length)n.y=Math.max(...kids.map(c=>c.y+c.h))+G*2}
   else{n.y=par.y+par.h+G*4;if(kids.length)n.x=Math.max(...kids.map(c=>c.x+c.w))+G*2}
-  doc.nodes.push(n);doc.edges.push(newEdge({node:par.id,side:lr?'right':'bottom',t:.5},{node:n.id,side:lr?'left':'top',t:.5}));
+  tidyAfterSize([n.id]);
   setSel([n.id]);commit();render();startEdit('node',n.id,true);return n}
 /* the hierarchy the arrows make: each shape's parent (the first arrow into it) and children, loops broken,
    and each shape's depth (0 = a top box). Shapes with no arrows to or from other shapes aren't in it. */
@@ -969,24 +974,49 @@ function treeInfo(){const N=id=>nodeById(id),kids=new Map(),par=new Map();
   const depth=new Map(),walk=(id,d)=>{depth.set(id,d);for(const k of kids.get(id)||[])walk(k,d+1)};
   for(const n of doc.nodes)if(!par.has(n.id)&&kids.get(n.id)?.length)walk(n.id,0);
   return{kids,par,depth}}
-/* tidy tree layout: each shape centred over its children, levels evenly spaced; the first root stays put.
-   quiet: used after sizes change; no toast, no zoom, no undo step of its own (the caller commits). */
-function arrangeTree(quiet){const lr=doc.canvas.sDir==='lr',G=gsz(),gapS=G*2,gapL=G*4,N=id=>nodeById(id);
+/* how a box's children are laid out: side by side (a row) or listed underneath it (a stack).
+   Each box can choose (n.kids = 'row' | 'stack'); otherwise the diagram's layout decides:
+   tree = always rows, lists = a heading whose children are all end boxes lists them, outline = always lists */
+/* how far a list is indented, and where its line drops from the heading: right where the router's
+   approach into each box's side runs (22 units out from its outline), so the line runs straight down with no jog */
+const listInd=()=>Math.max(gsz()*2,40),listDrop=n=>Math.min(.5,(listInd()-22-(n.style.strokeWidth>0?n.style.strokeWidth/2:0))/(doc.canvas.sDir==='lr'?n.h:n.w));
+function stackFor(id,kids){const n=nodeById(id),c=kids.get(id)||[];if(!n||!c.length)return false;
+  if(n.kids==='stack')return true;if(n.kids==='row')return false;
+  const L=doc.canvas.sLayout;return L==='outline'||(L==='lists'&&c.every(k=>!(kids.get(k)||[]).length))}
+/* tidy tree layout: rows of children centred under their parent, lists indented under it; the first top box stays put.
+   quiet: used after sizes or links change; no toast, no zoom, no undo step of its own (the caller commits). */
+function arrangeTree(quiet){const lr=doc.canvas.sDir==='lr',G=gsz(),gapS=G*2,gapL=G*4,gapV=G,IND=listInd(),N=id=>nodeById(id);
   const {kids,par}=treeInfo();
-  const A=n=>lr?n.h:n.w,B=n=>lr?n.w:n.h,pos=n=>lr?n.y:n.x;
-  for(const l of kids.values())l.sort((a,b)=>pos(N(a))-pos(N(b)));
-  const roots=doc.nodes.filter(n=>!par.has(n.id)&&kids.get(n.id)?.length).sort((a,b)=>pos(a)-pos(b));
+  const A=n=>lr?n.h:n.w,B=n=>lr?n.w:n.h,posA=n=>lr?n.y:n.x,posB=n=>lr?n.x:n.y;
+  const stack=new Map();for(const id of kids.keys())stack.set(id,stackFor(id,kids));
+  /* a row keeps the boxes' order across, a list their order down (ties broken the other way, so switching keeps the order) */
+  for(const [id,l] of kids)l.sort((a,b)=>stack.get(id)?(posB(N(a))-posB(N(b)))||(posA(N(a))-posA(N(b))):(posA(N(a))-posA(N(b)))||(posB(N(a))-posB(N(b))));
+  const roots=doc.nodes.filter(n=>!par.has(n.id)&&kids.get(n.id)?.length).sort((a,b)=>posA(a)-posA(b));
   if(!roots.length){if(!quiet)toast('Nothing to arrange yet. Connect a shape to the boxes under it first (select it and press Tab).');return false}
-  const span=new Map(),sp=id=>{if(!span.has(id)){const c=kids.get(id)||[];span.set(id,Math.max(A(N(id)),c.reduce((t,k)=>t+sp(k),0)+gapS*Math.max(0,c.length-1)))}return span.get(id)};
-  const depth=new Map(),lvl=[],walk=(id,d)=>{depth.set(id,d);lvl[d]=Math.max(lvl[d]||0,B(N(id)));for(const k of kids.get(id)||[])walk(k,d+1)};
-  for(const r of roots)walk(r.id,0);
-  const off=[0];for(let i=1;i<lvl.length;i++)off[i]=off[i-1]+lvl[i-1]+gapL;
-  const r0=roots[0],baseB=(lr?r0.x:r0.y)-(lvl[0]-B(r0))/2;
-  const place=(id,start)=>{const n=N(id),s=sp(id),c=kids.get(id)||[],d=depth.get(id),mid=start+s/2;
-    const a=Math.round(mid-A(n)/2),b=Math.round(baseB+off[d]+(lvl[d]-B(n))/2);if(lr){n.y=a;n.x=b}else{n.x=a;n.y=b}
-    let s0=mid-(c.reduce((t,k)=>t+sp(k),0)+gapS*Math.max(0,c.length-1))/2;for(const k of c){place(k,s0);s0+=sp(k)+gapS}};
-  let at=pos(r0)+A(r0)/2-sp(r0.id)/2;for(const r of roots){place(r.id,at);at+=sp(r.id)+gapS*2}
-  for(const e of doc.edges)if(e.from.node&&e.to.node&&par.get(e.to.node)===e.from.node){e.from={node:e.from.node,side:lr?'right':'bottom',t:.5};e.to={node:e.to.node,side:lr?'left':'top',t:.5}}
+  /* boxes in rows line up level by level: each level's band is as tall as its tallest box */
+  const band=[],inRow=new Map(),walk=(id,d,row)=>{inRow.set(id,row);if(row)band[d]=Math.max(band[d]||0,B(N(id)));for(const k of kids.get(id)||[])walk(k,d+1,!stack.get(id))};
+  for(const r of roots)walk(r.id,0,true);
+  /* measure each branch: its extent (W across, H down), where its own box sits across (bx), and where each child's branch starts */
+  const M=new Map();
+  const measure=(id,d)=>{const n=N(id),c=kids.get(id)||[],bh=inRow.get(id)?band[d]:B(n);
+    if(!c.length){const m={W:A(n),H:bh,bx:0,bh,at:[]};M.set(id,m);return m}
+    const ms=c.map(k=>measure(k,d+1));let m;
+    if(stack.get(id)){let b=bh+gapS;const at=ms.map(q=>{const p={a:IND,b};b+=q.H+gapV;return p});
+      m={W:Math.max(A(n),IND+Math.max(...ms.map(q=>q.W))),H:b-gapV,bx:0,bh,at}}
+    else{let a=0;const at=ms.map(q=>{const p={a,b:bh+gapL};a+=q.W+gapS;return p});
+      const cc=ms.map((q,i)=>at[i].a+q.bx+A(N(c[i]))/2);let bx=(cc[0]+cc[cc.length-1])/2-A(n)/2,sh=0;
+      if(bx<0){sh=-bx;bx=0;for(const p of at)p.a+=sh}
+      m={W:Math.max(bx+A(n),a-gapS+sh),H:bh+gapL+Math.max(...ms.map(q=>q.H)),bx,bh,at}}
+    M.set(id,m);return m};
+  const place=(id,a0,b0)=>{const n=N(id),m=M.get(id),a=Math.round(a0+m.bx),b=Math.round(b0+(m.bh-B(n))/2);
+    if(lr){n.y=a;n.x=b}else{n.x=a;n.y=b};(kids.get(id)||[]).forEach((k,i)=>place(k,a0+m.at[i].a,b0+m.at[i].b))};
+  for(const r of roots)measure(r.id,0);
+  const r0=roots[0],m0=M.get(r0.id);let a=posA(r0)-m0.bx;const b0=posB(r0)-(m0.bh-B(r0))/2;
+  for(const r of roots){place(r.id,a,b0);a+=M.get(r.id).W+gapS*2}
+  /* rows join bottom to top; a list's line drops from near the heading's left edge and turns into each box's side */
+  for(const e of doc.edges){const p=e.from.node,k=e.to.node;if(!p||!k||par.get(k)!==p)continue;
+    if(stack.get(p)){const t=listDrop(N(p));e.from={node:p,side:lr?'right':'bottom',t};e.to={node:k,side:lr?'top':'left',t:.5}}
+    else{e.from={node:p,side:lr?'right':'bottom',t:.5};e.to={node:k,side:lr?'left':'top',t:.5}}}
   if(quiet)return true;
   commit();fit();toast('Arranged as a tree. Press Ctrl+Z to undo.');return true}
 /* sizes changed: re-tidy the tree if that's switched on and any of these shapes is part of it */
@@ -1225,7 +1255,7 @@ function endPointer(ev){
   clearTimeout(lp.t);lp.t=0;
   if(ev.pointerType==='touch'){touches.delete(ev.pointerId);if(drag&&drag.kind==='pinch'){if(touches.size<2)drag=null;return}}
   if(!drag)return;const d=drag;drag=null;
-  if(d.kind==='newEdge'){const e=tmpEdge;tmpEdge=null;if(d.moved){e.id=uid('e');if(!(e.to.node===e.from.node&&e.to.side==='auto')){doc.edges.push(e);setSel([e.id]);commit()}}}
+  if(d.kind==='newEdge'){const e=tmpEdge;tmpEdge=null;if(d.moved){e.id=uid('e');if(!(e.to.node===e.from.node&&e.to.side==='auto')){doc.edges.push(e);if(e.from.node&&e.to.node)tidyAfterSize([e.to.node]);setSel([e.id]);commit()}}}
   else if(d.kind==='marquee'){marquee=null}
   else if(d.kind==='pan'){svg.style.cursor=spaceDown?'grab':'default';if(d.tapClear)setSel([]);if(d.ctx&&d.still){openCtx(ev.clientX,ev.clientY,d.ctx);return}saveLocal()}
   else if(d.kind==='move'&&!d.moved&&d.cycle){const c=d.cycle;cycleT=setTimeout(()=>{if(!editing&&sel.size===1&&sel.has(c.id))selectBelow(underPoint(c.cx,c.cy),c.id)},300)}
@@ -1457,6 +1487,7 @@ function hierSec(ns){const {kids,par,depth}=treeInfo(),inT=ns.some(n=>depth.has(
   const B=(act,label,title,on)=>`<button class="btn outline" data-act="${act}" title="${title}"${on?'':' disabled'}>${label}</button>`;
   const lv=ns.length===1&&depth.has(ns[0].id)?treePick('level',ns).length:0;
   return sec('Hierarchy',`<div class="acts">${B('pick-branch','Select branch','This box and everything under it',ns.some(n=>kids.get(n.id)?.length))}${B('pick-level','Select level','Every box at the same level',inT)}${B('pick-kids','Select children','The boxes directly under it',ns.some(n=>kids.get(n.id)?.length))}${B('pick-parent','Select parent','The box it hangs from',ns.some(n=>par.has(n.id)))}</div>`
+    +(ns.some(n=>kids.get(n.id)?.length)?fld('Children',`<div class="seg" role="group" aria-label="How this box’s children are laid out">${[['auto','Auto','Follow the diagram’s layout (Canvas → General)'],['row','Side by side','Children in a row under it'],['stack','List','Children listed underneath it']].map(([v,l,tt])=>`<button type="button" data-act="kids-${v}" title="${tt}" aria-pressed="${ns.every(n=>(n.kids||'auto')===v)}">${l}</button>`).join('')}</div>`):'')
     +(ns.length===1?`<div class="acts">${B('level-size','Make its level this size','Every box at this level takes this box’s width and height',lv>1)}</div>`:'')
     +`<p class="tip">${inT?'Select a branch or a level, then drag one box’s handle to resize them all.':'Join this box to others (select a box and press <b>Tab</b>) to use these.'}${doc.canvas.sTidy?' The tree re-tidies when sizes or links change (Canvas → General).':''}</p>`)}
 function nodePanel(ns){
@@ -1514,6 +1545,7 @@ function canvasPanel(){
       +(structure()?segF('Connectors','canvas','sHeads',[['none','Lines','Plain lines'],['arrow','Arrows','Lines with arrowheads']])
         +segF('Branches','canvas','sRoute',[['orthogonal','Tree','Right-angled lines sharing one trunk'],['straight','Straight','Straight lines fanning out']])
         +segF('Direction','canvas','sDir',[['tb','Down','Top to bottom'],['lr','Across','Left to right']])
+        +segF('Layout','canvas','sLayout',[['tree','Tree','Every level side by side'],['lists','Lists','Boxes at the end of a branch are listed under their heading, saving space'],['outline','Outline','Every level is listed under its parent, indented, like an outline']])
         +`<p class="tip">Drag from a shape's dot as many times as you like: each drag adds a branch. Select a shape and press <b>Tab</b> to add a box under it. To change the hierarchy, select an arrow and drag its end onto another box. <b>Alt+drag</b> an end to start a new branch from that spot instead.</p><div class="acts"><button class="btn outline" data-act="tree">Arrange as tree</button><button class="btn outline" data-act="levels" title="Give each level of the hierarchy its own light fill">Colour by level</button></div><label class="chk"><input type="checkbox" id="f-canvas-sTidy" ${A('canvas','sTidy')}>Re-tidy the tree when sizes or links change</label><p class="tip">To resize many boxes at once, select them (drag a box around them, or select one and use <b>Select level</b> or <b>Select branch</b>), then drag any one's handle.</p>`
       :`<p class="tip">Making a hierarchy chart, such as a top-down design or a structure diagram? Switch to <b>Structure</b>: one box can branch into many, with plain lines and a tidy tree layout.</p>`))
     +sec('Background',colorF('Colour','canvas','bg')+rangeF('Opacity %','canvas','bgOpacity',0,100,1,100)+`<p class="tip">At 0% opacity, PNG exports have a transparent background, which sits cleanly on any Word page colour.</p><div class="acts"><button class="btn outline" data-act="invert">Invert diagram colours</button></div><p class="tip">Flips every colour in the diagram from light to dark (or back), keeping the hues. Pair it with dark mode for a dark diagram.</p>`)
@@ -1558,6 +1590,7 @@ function apply(t,p,v){
   if(t==='canvas'&&['mode','sHeads','sRoute','sDir'].includes(p))structApply(p);
   if(t==='node'&&(p==='w'||p==='h'))tidyAfterSize(T.map(n=>n.id));
   if(t==='canvas'&&p==='sTidy'&&v)arrangeTree(true);
+  if(t==='canvas'&&(p==='sLayout'||p==='sDir')&&structure()&&arrangeTree(true))fit();
   if(p==='bg'&&t==='canvas'){/* keep label backgrounds that matched old bg in sync */}
   render();syncInspector();softCommit();
 }
@@ -1608,6 +1641,7 @@ insp.addEventListener('click',ev=>{
   else if(a==='back'){doc.nodes=[...ns,...doc.nodes.filter(n=>!sel.has(n.id))]}
   else if(a==='tree'){arrangeTree();return}
   else if(a==='levels'){colourLevels();return}
+  else if(a.startsWith('kids-')){const v=a.slice(5);for(const n of ns)if(v==='auto')delete n.kids;else n.kids=v;arrangeTree(true);commit();render();renderInspector();return}
   else if(a.startsWith('pick-')){const ids=treePick(a.slice(5),ns);if(ids.length){setSel(ids);render();toast(`Selected ${ids.length} box${ids.length===1?'':'es'}`)}return}
   else if(a==='level-size'&&ns.length===1){const n=ns[0],l=treePick('level',[n]).map(nodeById).filter(m=>m&&m!==n);sizeShapes(l,n.w,n.h);tidyAfterSize([n.id])}
   else if(a==='same-w'||a==='same-h'||a==='same-wh'){const W=Math.max(...ns.map(n=>n.w)),H=Math.max(...ns.map(n=>n.h));sizeShapes(ns,a==='same-h'?null:W,a==='same-w'?null:H)}
@@ -2420,7 +2454,7 @@ $('#exCopy').onclick=async()=>{if(!ex.blob||ex.fmt!=='png')return;const blob=ex.
    Shown once on a first visit, and from Canvas → Help any time. KEEP THIS IN STEP WITH THE APP:
    when a feature is added or changed, update (or add) its step here and bump TOUR_V so people
    who saw an older tour get the new one. */
-const TOUR_V=6;
+const TOUR_V=7;
 const tI=(d,extra='')=>`<svg viewBox="0 0 200 110" width="200" height="110" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
 const TOUR=[
   {t:'Welcome to Linework',art:tI('<rect x="70" y="8" width="60" height="22" rx="11"/><path d="M100 30v14"/><path d="M100 44l22 14-22 14-22-14z"/><path d="M100 72v14M122 58h30"/><rect x="72" y="86" width="56" height="18" rx="3"/><rect x="152" y="48" width="40" height="20" rx="3"/>'),
@@ -2430,7 +2464,7 @@ const TOUR=[
   {t:'Connect with arrows',at:'node',art:tI('<rect x="14" y="36" width="60" height="34" rx="4"/><circle cx="74" cy="53" r="5" fill="currentColor"/><path d="M80 53h52"/><path d="M128 47l9 6-9 6" fill="currentColor"/><rect x="138" y="36" width="50" height="34" rx="4"/>'),
    b:`<ul><li><b>Hover</b> a shape (like the highlighted one) to show its blue dots, then drag a dot onto another shape.</li><li>Arrows have dots too: drop an arrow onto another arrow to join it, or drag from an arrow's dot to branch off it. Joined arrows stay together when you move things or clean up.</li><li>An arrow can also end in empty space.</li><li><b>Double-click</b> an arrow to give it a label, such as Yes or No. Labels start centred on the line; drag them along it.</li><li>In the arrow's <b>Style</b> tab choose elbow, straight or curved, plus arrowheads and line style.</li></ul>`},
   {t:'Flowchart or structure diagram',at:'#insp',art:tI('<rect x="76" y="8" width="48" height="22" rx="3"/><path d="M100 30v14M40 44h120M40 44v14M100 44v14M160 44v14"/><rect x="16" y="58" width="48" height="22" rx="3"/><rect x="76" y="58" width="48" height="22" rx="3"/><rect x="136" y="58" width="48" height="22" rx="3"/><path d="M40 80v10M28 90h24M28 90v6M52 90v6"/>'),
-   b:`<ul><li>Making a hierarchy chart, like a top-down design? Click empty canvas, and under <b>General → Diagram type</b> choose <b>Structure</b>.</li><li>Then one box can branch into many: drag from the same dot again and again, or select a box and press <b>Tab</b> to add one under it.</li><li>Pick plain lines or arrows, a shared-trunk tree or straight lines, and <b>Arrange as tree</b> lines everything up neatly. <b>Colour by level</b> shades each level of the hierarchy.</li><li>Resize many boxes at once: select them (or select one and right-click → <b>Select level</b> or <b>Select branch</b>), then drag any one’s handle. The tree re-tidies itself to fit the new sizes.</li></ul>`},
+   b:`<ul><li>Making a hierarchy chart, like a top-down design? Click empty canvas, and under <b>General → Diagram type</b> choose <b>Structure</b>.</li><li>Then one box can branch into many: drag from the same dot again and again, or select a box and press <b>Tab</b> to add one under it.</li><li>Pick plain lines or arrows, a shared-trunk tree or straight lines, and <b>Arrange as tree</b> lines everything up neatly. <b>Colour by level</b> shades each level of the hierarchy.</li><li>Short of space? Set <b>Layout</b> to <b>Lists</b> so the boxes at the end of each branch are listed under their heading, or <b>Outline</b> to list every level. Or select one heading and choose how its own children sit.</li><li>Resize many boxes at once: select them (or select one and right-click → <b>Select level</b> or <b>Select branch</b>), then drag any one’s handle. The tree re-tidies itself to fit the new sizes.</li></ul>`},
   {t:'Edit text in place',at:'node',art:tI('<rect x="40" y="26" width="120" height="50" rx="5"/><rect x="58" y="40" width="84" height="22" rx="3" stroke-dasharray="3 3"/><path d="M118 44v14"/><path d="M70 51h40" stroke-width="3"/>'),
    b:`<ul><li><b>Double-click</b> a shape or arrow label and type. Press <b>Enter</b> or click away to finish, and <b>Shift+Enter</b> for a new line.</li><li>To move text inside a shape, <b>Alt+drag</b> it, or use <b>Alt+arrow keys</b>. There are exact X/Y offsets in the Text section too.</li><li>Font, size, colour, <b>All caps</b> and <b>Text outline</b> are in the sidebar.</li></ul>`},
   {t:'Style it',at:'#insp',art:tI('<rect x="120" y="8" width="70" height="94" rx="6"/><path d="M130 22h22M158 22h22"/><path d="M130 40h50M130 56h50M130 72h34"/><rect x="14" y="34" width="80" height="40" rx="5" fill="currentColor" fill-opacity=".15"/>'),
