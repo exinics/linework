@@ -183,6 +183,7 @@ input[type=range]{flex:1;min-width:60px;accent-color:var(--accent)}
 .tourDots button{width:8px;height:8px;padding:0;border:0;border-radius:50%;background:var(--line);cursor:pointer}
 .tourDots button[aria-current]{background:var(--accent);width:20px;border-radius:4px}
 /* spotlight mode: the overlay goes clear, the hole's huge shadow dims everything except the target */
+#tourModal{cursor:pointer}#tourModal .tourFoot{cursor:default}
 #tourModal.spot{background:transparent;display:block}
 #tourModal.spot .sheet.tour{position:absolute;width:min(380px,calc(100vw - 24px));max-height:calc(100vh - 24px)}
 #tourModal.spot .tourArt{display:none}
@@ -2460,13 +2461,16 @@ addEventListener('resize',()=>{if(!tourM.hidden)tourPlace()});
 function openTour(i=0){if(editing)endEdit();closeCtx();tourI=i;tourM.hidden=false;tourRender();$('#tourNext').focus()}
 function closeTour(){tourM.hidden=true;tourCur=null;if(tourM._hov!==undefined){hover=tourM._hov;tourM._hov=undefined;render()}try{localStorage.setItem('linework.tour',String(TOUR_V))}catch(_){}}
 function tourRender(){const s=TOUR[tourI],last=tourI===TOUR.length-1;
-  $('#tourArt').innerHTML=s.art;$('#tourTitle').textContent=s.t;$('#tourBody').innerHTML=s.b;$('#tourStep').textContent=`${tourI+1} of ${TOUR.length}`;
+  $('#tourArt').innerHTML=s.art;$('#tourTitle').textContent=s.t;$('#tourBody').innerHTML=s.b;$('#tourStep').textContent=`${tourI+1} of ${TOUR.length}`+(last?'':' · click anywhere for next');
   $('#tourDots').innerHTML=TOUR.map((_,i)=>`<button type="button" data-ti="${i}" aria-label="Step ${i+1}"${i===tourI?' aria-current="step"':''}></button>`).join('');
   $('#tourBack').disabled=tourI===0;$('#tourNext').textContent=last?'Start drawing':'Next';$('#tourSkip').hidden=last;tourPlace()}
 $('#tourNext').onclick=()=>{if(tourI===TOUR.length-1)closeTour();else{tourI++;tourRender()}};
 $('#tourBack').onclick=()=>{if(tourI>0){tourI--;tourRender()}};
 $('#tourSkip').onclick=closeTour;$('#tourClose').onclick=closeTour;
 $('#tourDots').onclick=ev=>{const b=ev.target.closest('[data-ti]');if(b){tourI=+b.dataset.ti;tourRender()}};
+/* a click anywhere (the dimmed screen or the card's text) moves on, so you don't have to chase the Next button around */
+tourM.addEventListener('click',ev=>{if(ev.button!==0||ev.target.closest('button,a,input,select,textarea,label,.tourDots'))return;
+  const sl=getSelection();if(sl&&!sl.isCollapsed&&tourS.contains(sl.anchorNode))return;$('#tourNext').click()});
 tourM.addEventListener('keydown',ev=>{ev.stopPropagation();
   if(ev.key==='Escape'){ev.preventDefault();closeTour()}
   else if(ev.key==='ArrowRight'){ev.preventDefault();$('#tourNext').click()}
