@@ -603,8 +603,19 @@ function anchorLocal(n,side,t){
   }
   if(apCache.size>6000)apCache.clear();apCache.set(key,v);return v;
 }
-function anchorPt(n,side,t){const l=anchorLocal(n,side,t),d=SIDES[side],o=(n.style.strokeWidth>0?n.style.strokeWidth/2:0);return{x:n.x+l[0]+d[0]*o,y:n.y+l[1]+d[1]*o}}
-function autoSide(n,o){const dx=(o.x-(n.x+n.w/2))/n.w,dy=(o.y-(n.y+n.h/2))/n.h;return Math.abs(dx)>Math.abs(dy)?(dx>0?'right':'left'):(dy>0?'bottom':'top')}
+/* rotation: n.rot is degrees clockwise about the shape's centre; x, y, w, h stay the unrotated box */
+const normRot=v=>{v=Math.round(((((+v||0)%360)+540)%360-180)*10)/10;return v===-180?180:v||0};
+/* a point in the shape's own frame (from its unrotated top-left) to the canvas, and a canvas point back into the unrotated frame */
+function rotP(n,x,y){const r=n.rot||0;if(!r)return{x:n.x+x,y:n.y+y};const a=r*Math.PI/180,c=Math.cos(a),s=Math.sin(a),dx=x-n.w/2,dy=y-n.h/2;return{x:n.x+n.w/2+dx*c-dy*s,y:n.y+n.h/2+dx*s+dy*c}}
+function unrot(n,p){const r=n.rot||0;if(!r)return p;const a=-r*Math.PI/180,c=Math.cos(a),s=Math.sin(a),cx=n.x+n.w/2,cy=n.y+n.h/2,dx=p.x-cx,dy=p.y-cy;return{x:cx+dx*c-dy*s,y:cy+dx*s+dy*c}}
+function rotV(n,d){const r=n.rot||0;if(!r)return d;const a=r*Math.PI/180,c=Math.cos(a),s=Math.sin(a);return[d[0]*c-d[1]*s,d[0]*s+d[1]*c]}
+/* elbow routing needs a straight-out direction: the nearest of the four (a tie keeps the side's own axis) */
+function rotDir(n,d){if(!n.rot)return d;const [x,y]=rotV(n,d),hz=Math.abs(Math.abs(x)-Math.abs(y))<1e-6?d[0]!==0:Math.abs(x)>Math.abs(y);return hz?[Math.sign(x)||1,0]:[0,Math.sign(y)||1]}
+/* the upright box around part of a shape (x,y,w,h in its own frame) once rotated, and around the whole shape */
+function rotBox(n,x,y,w,h){if(!n.rot)return{x:n.x+x,y:n.y+y,w,h};const P=[rotP(n,x,y),rotP(n,x+w,y),rotP(n,x,y+h),rotP(n,x+w,y+h)],xs=P.map(p=>p.x),ys=P.map(p=>p.y),x0=Math.min(...xs),y0=Math.min(...ys);return{x:x0,y:y0,w:Math.max(...xs)-x0,h:Math.max(...ys)-y0}}
+const nodeBox=n=>rotBox(n,0,0,n.w,n.h);
+function anchorPt(n,side,t){const l=anchorLocal(n,side,t),d=SIDES[side],o=(n.style.strokeWidth>0?n.style.strokeWidth/2:0);return rotP(n,l[0]+d[0]*o,l[1]+d[1]*o)}
+function autoSide(n,o){o=unrot(n,o);const dx=(o.x-(n.x+n.w/2))/n.w,dy=(o.y-(n.y+n.h/2))/n.h;return Math.abs(dx)>Math.abs(dy)?(dx>0?'right':'left'):(dy>0?'bottom':'top')}
 /* an arrow end can sit on another arrow ({edge,t}, t = how far along that arrow's route) and follows it when things
    move; its x,y remember the last spot, used if that arrow goes. routing marks the arrows being worked out, so two
    arrows ending on each other fall back to x,y instead of looping */
@@ -615,7 +626,7 @@ function onRoute(pts,t){const T=polyLen(pts)*clamp(t,0,1);let s=0;
 function hostPt(end){const h=!routing.has(end.edge)&&edgeById(end.edge);return h?onRoute(edgeRoute(h).pts,end.t??.5):null}
 function centerOf(end){if(end&&end.node){const n=nodeById(end.node);if(n)return{x:n.x+n.w/2,y:n.y+n.h/2}}if(end&&end.edge){const h=hostPt(end);if(h)return h}return{x:end?.x??0,y:end?.y??0}}
 function endInfo(end,other){
-  if(end&&end.node){const n=nodeById(end.node);if(n){let side=end.side,t=end.t??.5;if(!side||side==='auto'){side=autoSide(n,centerOf(other));t=.5}const p=anchorPt(n,side,t);return{x:p.x,y:p.y,dir:SIDES[side],n,side}}}
+  if(end&&end.node){const n=nodeById(end.node);if(n){let side=end.side,t=end.t??.5;if(!side||side==='auto'){side=autoSide(n,centerOf(other));t=.5}const p=anchorPt(n,side,t);return{x:p.x,y:p.y,dir:rotDir(n,SIDES[side]),rdir:n.rot?rotV(n,SIDES[side]):null,n,side}}}
   /* on an arrow: leave at right angles to it, on the side facing the other end */
   if(end&&end.edge){const h=hostPt(end);if(h){const o=centerOf(other),nx=-h.seg[1],ny=h.seg[0],s=(o.x-h.x)*nx+(o.y-h.y)*ny<0?-1:1,dx=nx*s,dy=ny*s;
     return{x:h.x,y:h.y,dir:Math.abs(dx)>=Math.abs(dy)?[Math.sign(dx)||1,0]:[0,Math.sign(dy)||1],seg:h.seg}}}
@@ -634,6 +645,8 @@ function sideHit(n,side,c){
    instead of making a tiny S-bend (which large corner rounding turns into a visible wiggle) */
 function alignEnds(a,b){
   /* one end loose: it snaps to the grid but the shape's side midpoint usually isn't on it, so line it up */
+  /* sideHit works in the canvas's own axes, so a rotated shape's end stays where it is */
+  if(a.n&&a.n.rot||b.n&&b.n.rot)return;
   if(!a.n!==!b.n){const s=a.n?a:b,f=a.n?b:a;if(!s.dir)return;const v=s.dir[0]===0,k=v?'x':'y',o=v?'y':'x';
     /* an end on another arrow may only slide along that arrow */
     if(f.seg&&Math.abs(f.seg[v?0:1])<.99)return;
@@ -694,7 +707,7 @@ function edgeRoute(e){routing.add(e.id);try{
   const a=endInfo(e.from,e.to),b=endInfo(e.to,e.from),st=e.style;
   let pts,curve=null,u0,u1;
   if(st.route==='curved'){
-    const da=a.dir||inferDir(a,b),db=b.dir||inferDir(b,a),dist=Math.hypot(b.x-a.x,b.y-a.y),k=clamp(dist*.45,30,180);
+    const da=a.rdir||a.dir||inferDir(a,b),db=b.rdir||b.dir||inferDir(b,a),dist=Math.hypot(b.x-a.x,b.y-a.y),k=clamp(dist*.45,30,180);
     curve=[{x:a.x,y:a.y},{x:a.x+da[0]*k,y:a.y+da[1]*k},{x:b.x+db[0]*k,y:b.y+db[1]*k},{x:b.x,y:b.y}];
     pts=[];for(let i=0;i<=28;i++)pts.push(bez(curve,i/28));
     u0=norm(a.x-curve[1].x,a.y-curve[1].y);u1=norm(b.x-curve[2].x,b.y-curve[2].y);
@@ -764,9 +777,14 @@ function nodeSVG(n,exp){
   const st=n.style,def=SHAPES[n.type],d=def.path(n.w,n.h,st),sw=st.strokeWidth;
   const sa=sw>0?`stroke="${esc(st.stroke)}" stroke-opacity="${st.strokeOpacity}" stroke-width="${sw}" stroke-linejoin="round" stroke-linecap="round"${dashAttr(st.dash,sw)}`:'stroke="none"';
   let s=`<g${exp?'':` data-node="${n.id}"`} transform="translate(${f(n.x)} ${f(n.y)})">`;
-  s+=`<path d="${d}" fill="${esc(st.fill)}" fill-opacity="${st.fillOpacity}" ${sa}${st.shadow?' filter="url(#lwShadow)"':''}${exp?'':' pointer-events="all"'}/>`;
-  if(def.extra&&sw>0)s+=`<path d="${def.extra(n.w,n.h,st)}" fill="none" ${sa} pointer-events="none"/>`;
-  if(exp||!(editing&&editing.kind==='node'&&editing.id===n.id))s+=textSVG(nodeText(n),st);
+  /* rotated: the shadow filter goes on a wrapper outside the rotation so it still falls straight down */
+  const R=n.rot?` transform="rotate(${f(n.rot)} ${f(n.w/2)} ${f(n.h/2)})"`:'',sh=st.shadow?' filter="url(#lwShadow)"':'';
+  const P=`<path d="${d}" fill="${esc(st.fill)}" fill-opacity="${st.fillOpacity}" ${sa}${R||sh}${exp?'':' pointer-events="all"'}/>`;
+  s+=R&&sh?`<g${sh}>${P}</g>`:P;
+  let inner='';
+  if(def.extra&&sw>0)inner+=`<path d="${def.extra(n.w,n.h,st)}" fill="none" ${sa} pointer-events="none"/>`;
+  if(exp||!(editing&&editing.kind==='node'&&editing.id===n.id))inner+=textSVG(nodeText(n),st);
+  s+=R&&inner?`<g${R}>${inner}</g>`:inner;
   return s+'</g>';
 }
 function edgeSVG(e,g,exp){
@@ -786,6 +804,12 @@ function labelSVG(e,g,exp){
   if(exp||!(editing&&editing.kind==='label'&&editing.id===e.id))s+=textSVG(lb.L,st);
   return s+'</g>';
 }
+/* the selection frame and handles turn with the shape; each handle's cursor points the way it pulls */
+const rotG=n=>n.rot?` transform="rotate(${f(n.rot)} ${f(n.x+n.w/2)} ${f(n.y+n.h/2)})"`:'';
+const H_ANG={e:0,se:45,s:90,sw:135,w:180,nw:225,n:270,ne:315},H_CUR=['e','se','s','sw','w','nw','n','ne'];
+const handleCur=(k,r)=>H_CUR[Math.round((((H_ANG[k]+(r||0))%360)+360)%360/45)%8]+'-resize';
+const ROT_CUR=(()=>{const a='M18.5 12a6.5 6.5 0 1 1-1.9-4.6',h='M17.5 3.5v4.5H13';const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="${a}" stroke="#fff" stroke-width="4.5"/><path d="${h}" stroke="#fff" stroke-width="4.5"/><path d="${a}" stroke="#1F2A44" stroke-width="2"/><path d="${h}" stroke="#1F2A44" stroke-width="2"/></svg>`;return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 12 12, grab`})();
+{const el=document.createElement('style');el.textContent=`[data-rot]{cursor:${ROT_CUR}}`;document.head.appendChild(el)}
 function uiSVG(){
   const z=view.z;let s='';
   for(const e of selEdges()){const g=geom.get(e.id);if(!g)continue;
@@ -795,17 +819,23 @@ function uiSVG(){
     if(g.label)s+=`<rect x="${f(g.label.x-2/z)}" y="${f(g.label.y-2/z)}" width="${f(g.label.W+4/z)}" height="${f(g.label.H+4/z)}" rx="${f(4/z)}" fill="none" stroke="${SEL}" stroke-width="${f(1/z)}" pointer-events="none"/>`;
   }
   const ns=selNodes();
-  for(const n of ns){const p=3/z;s+=`<rect x="${f(n.x-p)}" y="${f(n.y-p)}" width="${f(n.w+2*p)}" height="${f(n.h+2*p)}" fill="none" stroke="${SEL}" stroke-width="${f(1.25/z)}" pointer-events="none"/>`}
-  const resizing=drag&&drag.kind==='resize';
-  /* one shape: its handles. Several: handles on each, and dragging any of them resizes them all */
+  for(const n of ns){const p=3/z;s+=`<rect${rotG(n)} x="${f(n.x-p)}" y="${f(n.y-p)}" width="${f(n.w+2*p)}" height="${f(n.h+2*p)}" fill="none" stroke="${SEL}" stroke-width="${f(1.25/z)}" pointer-events="none"/>`}
+  /* one shape: its handles. Several: handles on each, and dragging any of them resizes (or rotates) them all.
+     They sit in the shape's rotated frame; the round one on a stem above the top rotates it */
   if(ns.length&&(ns.length>1||sel.size===1)&&!(drag&&drag.kind==='move'&&drag.moved))for(const n of ns){
     const hs=8/z,p=3/z,X=[n.x-p,n.x+n.w/2,n.x+n.w+p],Y=[n.y-p,n.y+n.h/2,n.y+n.h+p];
     const H=[['nw',0,0],['n',1,0],['ne',2,0],['e',2,1],['se',2,2],['s',1,2],['sw',0,2],['w',0,1]];
-    for(const [k,i,j] of H)s+=`<rect data-handle="${k}" data-hid="${n.id}" x="${f(X[i]-hs/2)}" y="${f(Y[j]-hs/2)}" width="${f(hs)}" height="${f(hs)}" rx="${f(1.5/z)}" fill="#fff" stroke="${SEL}" stroke-width="${f(1.25/z)}" style="cursor:${k}-resize"/>`;
+    let g='';for(const [k,i,j] of H)g+=`<rect data-handle="${k}" data-hid="${n.id}" x="${f(X[i]-hs/2)}" y="${f(Y[j]-hs/2)}" width="${f(hs)}" height="${f(hs)}" rx="${f(1.5/z)}" fill="#fff" stroke="${SEL}" stroke-width="${f(1.25/z)}" style="cursor:${handleCur(k,n.rot)}"/>`;
+    const rx=X[1],ry=Y[0]-24/z;
+    g+=`<line x1="${f(rx)}" y1="${f(Y[0]-hs/2)}" x2="${f(rx)}" y2="${f(ry+5/z)}" stroke="${SEL}" stroke-width="${f(1.25/z)}" pointer-events="none"/><g data-rot="${n.id}"><circle cx="${f(rx)}" cy="${f(ry)}" r="${f(12/z)}" fill="transparent"/><circle cx="${f(rx)}" cy="${f(ry)}" r="${f(5/z)}" fill="#fff" stroke="${SEL}" stroke-width="${f(1.5/z)}"/></g>`;
+    s+=n.rot?`<g${rotG(n)}>${g}</g>`:g;
   }
+  /* the angle while rotating, beside the pointer */
+  if(drag&&drag.kind==='rotate'&&ptrW){const n=nodeById(drag.id);if(n){const t=Math.round(n.rot||0)+'°',fs=11/z,w=(t.length*6.6+12)/z,h=20/z,x=ptrW.x+14/z,y=ptrW.y-h-10/z;
+    s+=`<g pointer-events="none"><rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" rx="${f(4/z)}" fill="#1F2A44" fill-opacity=".9"/><text x="${f(x+w/2)}" y="${f(y+h/2+fs*.36)}" font-size="${f(fs)}" font-family="${esc(famCSS('IBM Plex Sans'))}" font-weight="600" fill="#fff" text-anchor="middle">${t}</text></g>`}}
   const dragging=drag&&(drag.kind==='newEdge'||drag.kind==='endpoint');
   const portIds=new Set();
-  if(!editing&&!(drag&&(drag.kind==='move'||drag.kind==='resize'||drag.kind==='marquee'||drag.kind==='pan'))){
+  if(!editing&&!(drag&&(drag.kind==='move'||drag.kind==='resize'||drag.kind==='rotate'||drag.kind==='marquee'||drag.kind==='pan'))){
     /* connection dots show on hover only; the one selected shape shows its resize squares instead */
     if(hover&&nodeById(hover)&&!(sel.size===1&&sel.has(hover)))portIds.add(hover);
   }
@@ -814,12 +844,12 @@ function uiSVG(){
     for(const side of Object.keys(SIDES)){const p=anchorPt(n,side,.5);
       s+=`<g data-port="${n.id}" data-side="${side}" style="cursor:crosshair"${dragging?' pointer-events="none"':''}><circle cx="${f(p.x)}" cy="${f(p.y)}" r="${f(11/z)}" fill="transparent"/><circle cx="${f(p.x)}" cy="${f(p.y)}" r="${f(4.5/z)}" fill="#fff" stroke="${SEL}" stroke-width="${f(1.5/z)}"/></g>`}}
   if(snapHint){const n=nodeById(snapHint.node);if(n){
-    s+=`<rect x="${f(n.x-4/z)}" y="${f(n.y-4/z)}" width="${f(n.w+8/z)}" height="${f(n.h+8/z)}" rx="${f(6/z)}" fill="${SEL}" fill-opacity=".06" stroke="${SEL}" stroke-width="${f(1.5/z)}" pointer-events="none"/>`;
+    s+=`<rect${rotG(n)} x="${f(n.x-4/z)}" y="${f(n.y-4/z)}" width="${f(n.w+8/z)}" height="${f(n.h+8/z)}" rx="${f(6/z)}" fill="${SEL}" fill-opacity=".06" stroke="${SEL}" stroke-width="${f(1.5/z)}" pointer-events="none"/>`;
     if(snapHint.pt)s+=`<circle cx="${f(snapHint.pt.x)}" cy="${f(snapHint.pt.y)}" r="${f(5.5/z)}" fill="${SEL}" stroke="#fff" stroke-width="${f(1.5/z)}" pointer-events="none"/>`;}}
   /* arrows have connection dots too (the middle of each straight run); an arrow dropped on one, or anywhere along
      the line, stays joined to it */
   const portE=new Set();
-  if(!editing&&!(drag&&(drag.kind==='move'||drag.kind==='resize'||drag.kind==='marquee'||drag.kind==='pan'))&&hoverE&&geom.has(hoverE)&&!portIds.has(hover))portE.add(hoverE);
+  if(!editing&&!(drag&&(drag.kind==='move'||drag.kind==='resize'||drag.kind==='rotate'||drag.kind==='marquee'||drag.kind==='pan'))&&hoverE&&geom.has(hoverE)&&!portIds.has(hover))portE.add(hoverE);
   if(dragging&&nearE)portE.add(nearE);
   if(snapHint&&snapHint.edge){const g=geom.get(snapHint.edge);portE.add(snapHint.edge);
     if(g)s+=`<path d="${g.d}" fill="none" stroke="${SEL}" stroke-opacity=".3" stroke-width="${f(7/z)}" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>`}
@@ -866,7 +896,7 @@ function normalize(d){
   d.canvas=Object.assign({bg:'#FFFFFF',bgOpacity:1,grid:true,snap:true,gridSize:20,mode:'flow',sHeads:'none',sRoute:'orthogonal',sDir:'tb',sTidy:true,sLayout:'tree'},d.canvas||{});
   d.defaults=d.defaults||{};d.defaults.node=Object.assign(D.node,d.defaults.node||{});d.defaults.edge=Object.assign(D.edge,d.defaults.edge||{});d.defaults.label=Object.assign(D.label,d.defaults.label||{});
   d.nodes=d.nodes.filter(n=>n&&SHAPES[n.type]);
-  for(const n of d.nodes){n.style=Object.assign(clone(D.node),SHAPES[n.type].style||{},n.style||{});n.text=n.text??'';n.tx=+n.tx||0;n.ty=+n.ty||0;n.w=+n.w||100;n.h=+n.h||60;n.x=+n.x||0;n.y=+n.y||0}
+  for(const n of d.nodes){n.style=Object.assign(clone(D.node),SHAPES[n.type].style||{},n.style||{});n.text=n.text??'';n.tx=+n.tx||0;n.ty=+n.ty||0;n.w=+n.w||100;n.h=+n.h||60;n.x=+n.x||0;n.y=+n.y||0;if(+n.rot)n.rot=normRot(n.rot);else delete n.rot}
   for(const e of d.edges){e.style=Object.assign(clone(D.edge),e.style||{});e.label=Object.assign({text:'',t:.5,dx:0,dy:0},e.label||{});e.label.style=Object.assign(clone(D.label),e.label.style||{});e.from=e.from||{x:0,y:0};e.to=e.to||{x:0,y:0}}
   const eids=new Set(d.edges.map(e=>e.id));
   for(const e of d.edges)for(const k of ['from','to']){const q=e[k];if(q.edge&&(!eids.has(q.edge)||q.edge===e.id))e[k]={x:+q.x||0,y:+q.y||0}}
@@ -953,6 +983,8 @@ function paste(off=24){if(!clip)return;const map={};const ids=[];
   pasteEdges(clip.edges,off,off,map,ids);
   clip=clone({nodes:clip.nodes.map(n=>({...n,x:n.x+off,y:n.y+off})),edges:clip.edges.map(e=>{const c=clone(e);for(const k of ['from','to'])if(!c[k].node){c[k].x+=off;c[k].y+=off}return c})});
   setSel(ids);commit();render()}
+/* turn shapes about their own centres (null: back to upright) */
+function rotateBy(ns,d){for(const n of ns){n.rot=d==null?0:normRot((n.rot||0)+d);if(!n.rot)delete n.rot}}
 function fitText(n){for(let i=0;i<3;i++){const L=nodeText(n),ins=insets(n);n.h=Math.max(24,Math.ceil(L.H+ins.t+ins.b+2*n.style.padding+2))}}
 
 /* ---------- structure diagrams ---------- */
@@ -1070,7 +1102,9 @@ function onSel(force){
   if(force||sig!==inspSig){inspSig=sig;renderInspector()}else syncInspector();
   render();
 }
-function selectionBounds(nodes){let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;for(const n of nodes){x0=Math.min(x0,n.x);y0=Math.min(y0,n.y);x1=Math.max(x1,n.x+n.w);y1=Math.max(y1,n.y+n.h)}return{x0,y0,x1,y1}}
+function selectionBounds(nodes){let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;for(const m of nodes){const n=nodeBox(m);x0=Math.min(x0,n.x);y0=Math.min(y0,n.y);x1=Math.max(x1,n.x+n.w);y1=Math.max(y1,n.y+n.h)}return{x0,y0,x1,y1}}
+/* give a shape the box x,y,W,H, measured in the frame of its old box o (unrotated, from o's corner); a rotated shape's centre moves to match */
+function setBox(n,o,x,y,W,H){const c=rotP({x:o.x,y:o.y,w:o.w,h:o.h,rot:n.rot},x-o.x+W/2,y-o.y+H/2);n.x=c.x-W/2;n.y=c.y-H/2;n.w=W;n.h=H}
 
 /* ---------- text editing ---------- */
 function startEdit(kind,id,selectAll,initial){
@@ -1083,12 +1117,15 @@ function startEdit(kind,id,selectAll,initial){
   if(selectAll&&initial==null)ta.select();else ta.setSelectionRange(ta.value.length,ta.value.length);
 }
 function placeEditor(){
-  if(!editing)return;const z=view.z;let L,st,bx,by,bw,bh,ty,pt=0;
+  if(!editing)return;const z=view.z;let L,st,bx,by,bw,bh,ty,pt=0,rn=null;
   if(editing.kind==='node'){const n=nodeById(editing.id);if(!n){endEdit();return}st=n.style;L=nodeText(n);bx=n.x+L.box.x;bw=L.box.w;by=n.y+L.y0;bh=Math.max(L.H,L.lh);ta.style.background='rgba(47,107,255,.07)';ty=n.y+n.h;
+    if(n.rot){rn=n;const b=nodeBox(n);ty=b.y+b.h}
     /* auto-size: the box shows the whole area the text fits into, with the text sitting where it will render */
     if(st.autoSize){by=n.y+L.box.y;bh=Math.max(L.box.h,L.H);pt=Math.max(0,L.y0-L.box.y)}}
   else{const e=edgeById(editing.id);const g=geom.get(editing.id);if(!e||!g||!g.label){return}const lb=g.label;st=lb.st;L=lb.L;bw=Math.max(lb.W,60);bx=lb.cx-bw/2;by=lb.y+3;bh=L.H;ta.style.background=st.bgOpacity>0?st.bg:'transparent'}
   Object.assign(ta.style,{left:(view.x+bx*z)+'px',top:(view.y+by*z)+'px',width:(bw*z+2)+'px',height:(bh*z+2)+'px',paddingTop:(pt*z)+'px',font:`${st.italic?'italic ':''}${st.bold?700:400} ${L.fs*z}px ${famCSS(st.fontFamily)}`,lineHeight:(L.lh*z)+'px',color:st.color,textAlign:editing.kind==='label'?'center':st.align,textDecoration:st.underline?'underline':'none'});
+  /* a rotated shape: the editor turns with it, about the shape's centre */
+  if(rn){Object.assign(ta.style,{transformOrigin:`${(rn.x+rn.w/2-bx)*z}px ${(rn.y+rn.h/2-by)*z}px`,transform:`rotate(${rn.rot}deg)`});bx=rn.x+rn.w/2-bw/2}else ta.style.transform='';
   const tip=$('#editTip');tip.hidden=false;tip.textContent=(editing.kind==='label'?'Editing label':'Editing text')+' · Enter to finish · Shift+Enter for a new line';
   tip.style.left=(view.x+(bx+bw/2)*z)+'px';tip.style.top=(view.y+(ty??by+bh)*z+8)+'px';
 }
@@ -1108,9 +1145,10 @@ ta.addEventListener('blur',()=>setTimeout(()=>{if(editing&&document.activeElemen
 function toWorld(ev){const r=svg.getBoundingClientRect();return{x:(ev.clientX-r.left-view.x)/view.z,y:(ev.clientY-r.top-view.y)/view.z,sx:ev.clientX-r.left,sy:ev.clientY-r.top}}
 function findSnap(p,exclude,skip){
   const z=view.z;nearE=null;
-  for(let i=doc.nodes.length-1;i>=0;i--){const n=doc.nodes[i];if(n.id===exclude)continue;const m=16/z;
+  const P0=p;
+  for(let i=doc.nodes.length-1;i>=0;i--){const n=doc.nodes[i];if(n.id===exclude)continue;const m=16/z;p=unrot(n,P0);
     if(p.x<n.x-m||p.x>n.x+n.w+m||p.y<n.y-m||p.y>n.y+n.h+m)continue;
-    for(const side of Object.keys(SIDES)){const a=anchorPt(n,side,.5);if(Math.hypot(a.x-p.x,a.y-p.y)<16/z)return{end:{node:n.id,side,t:.5},pt:a,node:n.id}}
+    for(const side of Object.keys(SIDES)){const a=anchorPt(n,side,.5);if(Math.hypot(a.x-P0.x,a.y-P0.y)<16/z)return{end:{node:n.id,side,t:.5},pt:a,node:n.id}}
     const inX=p.x>=n.x&&p.x<=n.x+n.w,inY=p.y>=n.y&&p.y<=n.y+n.h,th=9/z;
     const cands=[];
     if(inX){cands.push(['top',Math.abs(p.y-n.y),(p.x-n.x)/n.w]);cands.push(['bottom',Math.abs(p.y-n.y-n.h),(p.x-n.x)/n.w])}
@@ -1119,7 +1157,7 @@ function findSnap(p,exclude,skip){
     if(cands.length&&cands[0][1]<th){const [side,,r]=cands[0];const t=clamp(Math.round(r*20)/20,.05,.95);return{end:{node:n.id,side,t},pt:anchorPt(n,side,t),node:n.id}}
     if(inX&&inY)return{end:{node:n.id,side:'auto'},pt:null,node:n.id};
   }
-  return edgeSnap(p,skip);
+  return edgeSnap(P0,skip);
 }
 /* a dot that would sit under the arrow's label slides along the line until it's clear of it (or is dropped if it can't) */
 function edgePorts(e,g){const P=g.pts,L=polyLen(P)||1,r=[],b=g.label,m=4;let s=0;
@@ -1146,7 +1184,7 @@ svg.addEventListener('pointerdown',ev=>{
   const now=performance.now(),dbl=now-lastDown.t<380&&Math.hypot(ev.clientX-lastDown.x,ev.clientY-lastDown.y)<8;
   lastDown={t:dbl?0:now,x:ev.clientX,y:ev.clientY};clearTimeout(cycleT);
   const q=s=>t.closest?t.closest(s):null;
-  const hEl=q('[data-handle]'),portEl=q('[data-port]'),eportEl=q('[data-eport]'),endEl=q('[data-endpoint]'),labEl=q('[data-label]'),edgeEl=q('[data-edge]'),nodeEl=q('[data-node]');
+  const rotEl=q('[data-rot]'),hEl=q('[data-handle]'),portEl=q('[data-port]'),eportEl=q('[data-eport]'),endEl=q('[data-endpoint]'),labEl=q('[data-label]'),edgeEl=q('[data-edge]'),nodeEl=q('[data-node]');
   /* right button: drag pans, a click without moving opens the context menu */
   if(ev.button===2){drag={kind:'pan',sx:ev.clientX,sy:ev.clientY,vx:view.x,vy:view.y,ctx:{p,node:nodeEl?.dataset.node,edge:(labEl||edgeEl)?((labEl||edgeEl).dataset.label||(labEl||edgeEl).dataset.edge):null},still:true};ev.preventDefault();return}
   if(ev.button===1||spaceDown){drag={kind:'pan',sx:ev.clientX,sy:ev.clientY,vx:view.x,vy:view.y};svg.style.cursor='grabbing';ev.preventDefault();return}
@@ -1164,6 +1202,9 @@ svg.addEventListener('pointerdown',ev=>{
     lp.t=setTimeout(()=>{lp.t=0;if(touches.size!==1)return;
       if(drag&&drag.kind==='move')for(const [id,o] of drag.orig){const n=nodeById(id);if(n){n.x=o.x;n.y=o.y}}
       drag=null;tmpEdge=null;marquee=null;guides=[];snapHint=null;render();openCtx(c.x,c.y,t);navigator.vibrate?.(12)},520)}
+  /* the round handle: turn about the shape's centre (with several selected, each turns by the same amount about its own) */
+  if(rotEl){const ns=selNodes(),n=nodeById(rotEl.dataset.rot)||ns[0];if(n){const c={x:n.x+n.w/2,y:n.y+n.h/2};
+    drag={kind:'rotate',id:n.id,c,a0:Math.atan2(p.y-c.y,p.x-c.x),r0:n.rot||0,orig:new Map(ns.map(m=>[m.id,m.rot||0])),moved:false};svg.style.cursor=ROT_CUR;render();return}}
   if(hEl){const ns=selNodes(),n=nodeById(hEl.dataset.hid)||ns[0],R=m=>({x:m.x,y:m.y,w:m.w,h:m.h});
     drag={kind:'resize',h:hEl.dataset.handle,id:n.id,o:R(n),p0:p,others:new Map(ns.filter(m=>m!==n).map(m=>[m.id,R(m)]))};return}
   if(portEl){const id=portEl.dataset.port,side=portEl.dataset.side;tmpEdge=newEdge({node:id,side,t:.5},{x:p.x,y:p.y});tmpEdge.id='__tmp';drag={kind:'newEdge',p0:p,moved:false};render();return}
@@ -1215,7 +1256,7 @@ svg.addEventListener('pointermove',ev=>{
   if(!drag){
     const t=ev.target,el=t.closest?t.closest('[data-node],[data-port]'):null;
     let h=el?(el.dataset.node||el.dataset.port):null;
-    if(!h&&hover){const n=nodeById(hover);const m=20/view.z;if(n&&p.x>n.x-m&&p.x<n.x+n.w+m&&p.y>n.y-m&&p.y<n.y+n.h+m)h=hover}
+    if(!h&&hover){const n=nodeById(hover);const m=20/view.z,q=n&&unrot(n,p);if(n&&q.x>n.x-m&&q.x<n.x+n.w+m&&q.y>n.y-m&&q.y<n.y+n.h+m)h=hover}
     /* an arrow keeps its dots while the pointer stays close to it, so they can be reached */
     const ee=!h&&t.closest?t.closest('[data-edge],[data-eport],[data-label]'):null;let he=ee?(ee.dataset.edge||ee.dataset.eport||ee.dataset.label):null;
     if(!he&&!h&&hoverE){const g=geom.get(hoverE);if(g&&nearestOn(g.pts,p).d<(16/view.z)**2)he=hoverE}
@@ -1231,36 +1272,47 @@ svg.addEventListener('pointermove',ev=>{
       const mx=(a.x+b.x)/2-r.left,my=(a.y+b.y)/2-r.top,m0x=drag.mx-r.left,m0y=drag.my-r.top;
       view.z=nz;view.x=mx-(m0x-drag.vx)*nz/drag.z0;view.y=my-(m0y-drag.vy)*nz/drag.z0;render();break}
     case 'marquee':{marquee.x1=p.x;marquee.y1=p.y;const x0=Math.min(marquee.x0,p.x),x1=Math.max(marquee.x0,p.x),y0=Math.min(marquee.y0,p.y),y1=Math.max(marquee.y0,p.y);
-      const ids=new Set(drag.base);for(const n of doc.nodes)if(n.x<x1&&n.x+n.w>x0&&n.y<y1&&n.y+n.h>y0)ids.add(n.id);
+      const ids=new Set(drag.base);for(const n of doc.nodes){const b=nodeBox(n);if(b.x<x1&&b.x+b.w>x0&&b.y<y1&&b.y+b.h>y0)ids.add(n.id)}
       for(const e of doc.edges){const g=geom.get(e.id);if(!g)continue;const a=g.pts[0],b=g.pts[g.pts.length-1];if(a.x>=x0&&a.x<=x1&&a.y>=y0&&a.y<=y1&&b.x>=x0&&b.x<=x1&&b.y>=y0&&b.y<=y1)ids.add(e.id)}
       sel=ids;onSel();break}
     case 'move':{let dx=p.x-drag.p0.x,dy=p.y-drag.p0.y;if(!drag.moved&&Math.hypot(dx,dy)*z<3)break;drag.moved=true;guides=[];
       const g=drag.grab?nodeById(drag.grab):null;
       if(g){const o=drag.orig.get(g.id);const th=6/z;
-        const mine=[o.x+dx,o.x+dx+g.w/2,o.x+dx+g.w],mineY=[o.y+dy,o.y+dy+g.h/2,o.y+dy+g.h];
+        /* lines up the upright boxes around shapes, so rotated ones align by what you see */
+        const gb=nodeBox(g),ox=o.x+gb.x-g.x,oy=o.y+gb.y-g.y;
+        const mine=[ox+dx,ox+dx+gb.w/2,ox+dx+gb.w],mineY=[oy+dy,oy+dy+gb.h/2,oy+dy+gb.h];
         let bx=null,by=null;
-        for(const n of doc.nodes){if(sel.has(n.id))continue;const xs=[n.x,n.x+n.w/2,n.x+n.w],ys=[n.y,n.y+n.h/2,n.y+n.h];
+        for(const m of doc.nodes){if(sel.has(m.id))continue;const n=nodeBox(m),xs=[n.x,n.x+n.w/2,n.x+n.w],ys=[n.y,n.y+n.h/2,n.y+n.h];
           for(let i=0;i<3;i++)for(let j=0;j<3;j++){if(i!==j&&(i===1||j===1))continue;const d1=xs[j]-mine[i];if(Math.abs(d1)<th&&(!bx||Math.abs(d1)<Math.abs(bx.d)))bx={d:d1,x:xs[j],n};const d2=ys[j]-mineY[i];if(Math.abs(d2)<th&&(!by||Math.abs(d2)<Math.abs(by.d)))by={d:d2,y:ys[j],n}}}
         if(bx)dx+=bx.d;else if(snapOn()){const c=o.x+g.w/2+dx;dx+=snapV(c)-c}
         if(by)dy+=by.d;else if(snapOn()){const c=o.y+g.h/2+dy;dy+=snapV(c)-c}
-        if(bx){const n=bx.n,y0=Math.min(n.y,o.y+dy),y1=Math.max(n.y+n.h,o.y+dy+g.h);guides.push([bx.x,y0-10,bx.x,y1+10])}
-        if(by){const n=by.n,x0=Math.min(n.x,o.x+dx),x1=Math.max(n.x+n.w,o.x+dx+g.w);guides.push([x0-10,by.y,x1+10,by.y])}
+        if(bx){const n=bx.n,y0=Math.min(n.y,oy+dy),y1=Math.max(n.y+n.h,oy+dy+gb.h);guides.push([bx.x,y0-10,bx.x,y1+10])}
+        if(by){const n=by.n,x0=Math.min(n.x,ox+dx),x1=Math.max(n.x+n.w,ox+dx+gb.w);guides.push([x0-10,by.y,x1+10,by.y])}
       }else if(snapOn()){dx=snapV(dx);dy=snapV(dy)}
       for(const [id,o] of drag.orig){const n=nodeById(id);n.x=o.x+dx;n.y=o.y+dy}
       for(const fr of drag.free){fr.e[fr.k].x=fr.x+dx;fr.e[fr.k].y=fr.y+dy}
       render();syncInspector();break}
     case 'resize':{const n=nodeById(drag.id),o=drag.o,h=drag.h;let dx=p.x-drag.p0.x,dy=p.y-drag.p0.y;
+      /* a rotated shape resizes along its own sides: the pointer's movement is turned into its frame, and the side
+         (or corner) opposite the handle stays put. The grid only applies to upright shapes */
+      if(n.rot){const a=-n.rot*Math.PI/180,c=Math.cos(a),si=Math.sin(a);[dx,dy]=[dx*c-dy*si,dx*si+dy*c]}
       let x0=o.x,y0=o.y,x1=o.x+o.w,y1=o.y+o.h;
       if(h.includes('w'))x0+=dx;if(h.includes('e'))x1+=dx;if(h.includes('n'))y0+=dy;if(h.includes('s'))y1+=dy;
-      if(snapOn()&&!ev.altKey){if(h.includes('w'))x0=snapV(x0);if(h.includes('e'))x1=snapV(x1);if(h.includes('n'))y0=snapV(y0);if(h.includes('s'))y1=snapV(y1)}
+      if(snapOn()&&!ev.altKey&&!n.rot){if(h.includes('w'))x0=snapV(x0);if(h.includes('e'))x1=snapV(x1);if(h.includes('n'))y0=snapV(y0);if(h.includes('s'))y1=snapV(y1)}
       const M=16;if(x1-x0<M){if(h.includes('w'))x0=x1-M;else x1=x0+M}if(y1-y0<M){if(h.includes('n'))y0=y1-M;else y1=y0+M}
       if(ev.shiftKey&&h.length===2){const k=Math.max((x1-x0)/o.w,(y1-y0)/o.h);const w=o.w*k,hh=o.h*k;if(h.includes('w'))x0=x1-w;else x1=x0+w;if(h.includes('n'))y0=y1-hh;else y1=y0+hh}
-      n.x=x0;n.y=y0;n.w=x1-x0;n.h=y1-y0;
+      setBox(n,o,x0,y0,x1-x0,y1-y0);
       /* the other selected shapes change by the same amount (Shift on a corner: by the same proportion), from the same side */
       const kx=n.w/o.w,ky=n.h/o.h,prop=ev.shiftKey&&h.length===2;
       for(const [id,q] of drag.others){const m=nodeById(id);if(!m)continue;
         const W=Math.max(M,prop?q.w*kx:q.w+n.w-o.w),Hh=Math.max(M,prop?q.h*ky:q.h+n.h-o.h);
-        m.x=h.includes('w')?q.x+q.w-W:h.includes('e')?q.x:q.x+(q.w-W)/2;m.y=h.includes('n')?q.y+q.h-Hh:h.includes('s')?q.y:q.y+(q.h-Hh)/2;m.w=W;m.h=Hh}
+        setBox(m,q,h.includes('w')?q.x+q.w-W:h.includes('e')?q.x:q.x+(q.w-W)/2,h.includes('n')?q.y+q.h-Hh:h.includes('s')?q.y:q.y+(q.h-Hh)/2,W,Hh)}
+      render();syncInspector();break}
+    case 'rotate':{const n=nodeById(drag.id);if(!n)break;drag.moved=true;
+      /* Shift: 15° steps. Otherwise it settles on upright and quarter turns when close; Alt turns that off */
+      let r=drag.r0+(Math.atan2(p.y-drag.c.y,p.x-drag.c.x)-drag.a0)*180/Math.PI;
+      if(ev.shiftKey)r=Math.round(r/15)*15;else if(!ev.altKey){const q=Math.round(r/90)*90;if(Math.abs(r-q)<4)r=q}
+      const d=normRot(r)-drag.r0;for(const [id,r0] of drag.orig){const m=nodeById(id);if(m)m.rot=normRot(r0+d)}
       render();syncInspector();break}
     case 'newEdge':{drag.moved=true;const s=findSnap(p,null,drag.skip);snapHint=s;tmpEdge.to=s?s.end:{x:p.x,y:p.y};render();break}
     case 'endpoint':{drag.moved=true;const e=edgeById(drag.id);const s=findSnap(p,null,skipFor(drag.id));snapHint=s;e[drag.which]=s?s.end:{x:snapOn()?snapV(p.x):p.x,y:snapOn()?snapV(p.y):p.y};render();break}
@@ -1279,6 +1331,7 @@ function endPointer(ev){
   else if(d.kind==='endpoint'){const e=edgeById(d.id),now=e&&e[d.which].node;
     /* a structure diagram's arrow moved to another box: the hierarchy changed, so re-tidy the tree if that's on */
     if(d.moved&&now&&now!==d.was&&e.from.node&&e.to.node&&structure()&&doc.canvas.sTidy&&arrangeTree(true))toast('Moved. The tree re-tidied for the new hierarchy; Ctrl+Z undoes it.');commit()}
+  else if(d.kind==='rotate'){svg.style.cursor='default';for(const id of d.orig.keys()){const m=nodeById(id);if(m&&!m.rot)delete m.rot}commit()}
   else if(d.kind==='resize'){const o=d.o,n=nodeById(d.id),ch=n&&(n.w!==o.w||n.h!==o.h);
     if(ch&&tidyAfterSize([d.id,...d.others.keys()]))toast('Tree re-tidied for the new sizes. Ctrl+Z undoes it.');commit()}
   else commit();
@@ -1294,7 +1347,7 @@ function zoomAt(sx,sy,k){const nz=clamp(view.z*k,.1,5);view.x=sx-(sx-view.x)*nz/
 function zoomCenter(k){const r=svg.getBoundingClientRect();zoomAt(r.width/2,r.height/2,k)}
 function contentBounds(nodes,edges){
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;const add=(a,b,c,d)=>{x0=Math.min(x0,a);y0=Math.min(y0,b);x1=Math.max(x1,c);y1=Math.max(y1,d)};
-  for(const n of nodes){const m=(n.style.strokeWidth||0)/2+(n.style.shadow?10:0);add(n.x-m,n.y-m,n.x+n.w+m,n.y+n.h+m+(n.style.shadow?4:0));const L=nodeText(n);add(n.x+L.box.x,n.y+L.y0,n.x+L.box.x+L.box.w,n.y+L.y0+L.H)}
+  for(const n of nodes){const m=(n.style.strokeWidth||0)/2+(n.style.shadow?10:0),B=nodeBox(n);add(B.x-m,B.y-m,B.x+B.w+m,B.y+B.h+m+(n.style.shadow?4:0));const L=nodeText(n),T=rotBox(n,L.box.x,L.y0,L.box.w,L.H);add(T.x,T.y,T.x+T.w,T.y+T.h)}
   for(const e of edges){const g=geom.get(e.id)||edgeGeom(e);const m=e.style.width+e.style.headSize*.6;for(const p of g.pts)add(p.x-m,p.y-m,p.x+m,p.y+m);if(g.label)add(g.label.x,g.label.y,g.label.x+g.label.W,g.label.y+g.label.H)}
   return x1<x0?null:{x:x0,y:y0,w:x1-x0,h:y1-y0};
 }
@@ -1475,7 +1528,8 @@ const IC={
   oT:'<path d="M3 4h18"/><rect x="6" y="7" width="4" height="10" rx="1"/><rect x="14" y="7" width="4" height="6" rx="1"/>',
   oM:'<path d="M3 12h18"/><rect x="6" y="6" width="4" height="12" rx="1"/><rect x="14" y="8" width="4" height="8" rx="1"/>',
   oB:'<path d="M3 20h18"/><rect x="6" y="7" width="4" height="10" rx="1"/><rect x="14" y="11" width="4" height="6" rx="1"/>',
-  dH:'<path d="M3 4v16M21 4v16"/><rect x="9" y="8" width="6" height="8" rx="1"/>',dV:'<path d="M4 3h16M4 21h16"/><rect x="8" y="9" width="8" height="6" rx="1"/>'
+  dH:'<path d="M3 4v16M21 4v16"/><rect x="9" y="8" width="6" height="8" rx="1"/>',dV:'<path d="M4 3h16M4 21h16"/><rect x="8" y="9" width="8" height="6" rx="1"/>',
+  rotR:'<path d="M19 12a7 7 0 1 1-2-4.9"/><path d="M18 3v4.5h-4.5"/>',rotL:'<path d="M5 12a7 7 0 1 0 2-4.9"/><path d="M6 3v4.5h4.5"/>'
 };
 const ico=k=>`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[k]}</svg>`;
 const fid=(t,p,s='')=>`f-${t}-${p.replace(/\./g,'-')}${s}`;
@@ -1513,7 +1567,8 @@ function nodePanel(ns){
   const head=`<div class="insp-head"><h2>${multi?ns.length+' shapes':SHAPES[ns[0].type].name}</h2><small>${multi?'':'shape'}</small></div>`;
   const tb=tabBar('node',[['style','Style'],['presets','Presets']]);
   let h=sec('Shape',selG('Type','node','type',typeGroups())+(multi?`<div class="xywh">${['w','h'].map(k=>`<label>${k==='w'?'Width':'Height'}<input type="number" class="inp" id="${fid('node',k)}" ${A('node',k)} data-mix="1" step="1" min="8"></label>`).join('')}</div><p class="tip">Sets every selected shape, each keeping its centre. You can also drag any selected shape's handle to resize them all.</p><div class="acts"><button class="btn outline" data-act="same-w" title="Make them all as wide as the widest">Same width</button><button class="btn outline" data-act="same-h" title="Make them all as tall as the tallest">Same height</button><button class="btn outline" data-act="same-wh" title="Make them all the size of the largest">Same size</button></div>`:`<div class="xywh">${['x','y','w','h'].map(k=>`<label>${k.toUpperCase()}<input type="number" class="inp" id="${fid('node',k)}" ${A('node',k)} step="1"></label>`).join('')}</div>`)
-    +`<div class="acts"><button class="btn outline" data-act="fitText">Fit height to text</button></div>`);
+    +`<div class="acts"><button class="btn outline" data-act="fitText">Fit height to text</button></div>`
+    +rangeF('Rotation °','node','rot',-180,180,1)+`<div class="acts"><button class="btn outline" data-act="rot-ccw" title="Turn 90° anticlockwise">${ico('rotL')}90°</button><button class="btn outline" data-act="rot-cw" title="Turn 90° clockwise">${ico('rotR')}90°</button><button class="btn outline" data-act="rot-0" title="Back to upright">Upright</button></div><p class="tip">Or drag the round handle above a selected shape. Hold <b>Shift</b> for 15° steps; it settles on straight angles unless you hold <b>Alt</b>.</p>`);
   if(structure())h+=hierSec(ns);
   if(multi)h+=sec('Align',`<div class="acts"><div class="seg" role="group" aria-label="Align">${[['left','oL','Align left edges'],['center','oC','Align centres'],['right','oR','Align right edges'],['top','oT','Align tops'],['middle','oM','Align middles'],['bottom','oB','Align bottoms']].map(a=>`<button type="button" data-act="al-${a[0]}" title="${a[2]}" aria-label="${a[2]}">${ico(a[1])}</button>`).join('')}</div>${ns.length>2?`<div class="seg" role="group" aria-label="Distribute"><button type="button" data-act="dist-h" title="Distribute horizontally" aria-label="Distribute horizontally">${ico('dH')}</button><button type="button" data-act="dist-v" title="Distribute vertically" aria-label="Distribute vertically">${ico('dV')}</button></div>`:''}</div>`);
   h+=sec('Text',(multi?'':`<textarea class="inp" id="${fid('node','text')}" ${A('node','text')} rows="3" aria-label="Shape text" placeholder="Type the text for this shape"></textarea>`)
@@ -1571,7 +1626,7 @@ function canvasPanel(){
   +pane('canvas','presets',presetSec(false)+edgePresetSec(false))
   +pane('canvas','help',sec('How to',`<p class="tip">Click a shape on the left to add it, or drag it onto the canvas. Hover a shape and drag one of its blue dots to draw an arrow. Drop the arrow on a dot or along an edge to pin it there, or anywhere inside a shape to let it pick the nearest side. Arrows have dots too: drop an arrow on another arrow to join it there (it stays joined when things move or get cleaned up), or drag from an arrow's dot to branch off it. Double-click an arrow to give it a label such as Yes or No.</p>`)
   +sec('Tour','<p class="tip">A one-minute walk through every feature.</p><div class="acts"><button class="btn outline" data-act="tour">Show the tour</button></div>')+sec('About','<p class="tip">Linework is free. Signing in with Google saves your charts online, privately. See the <a href="privacy.html" target="_blank">privacy policy</a>.</p>')
-  +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Enter / Esc</dt><dd>Finish editing</dd><dt>Shift+Enter</dt><dd>New line in text</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Click a selected shape again</dt><dd>Select what’s underneath it</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste at the pointer, duplicate</dd><dt>Ctrl+S</dt><dd>Save to My charts</dd><dt>Ctrl+Shift+S</dt><dd>Save as a file</dd><dt>Tab</dt><dd>Add a box under the selected one (structure diagrams)</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Drag an arrow's end</dt><dd>Re-attach it (structure diagrams: changes the hierarchy)</dd><dt>Alt+drag an arrow's end</dt><dd>New branch from that spot (structure diagrams)</dd><dt>Resize with several selected</dt><dd>Resizes them all by the same amount</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
+  +sec('Shortcuts',`<dl class="keys"><dt>Double-click</dt><dd>Add a box or edit text</dd><dt>Enter</dt><dd>Edit selected text</dd><dt>Enter / Esc</dt><dd>Finish editing</dd><dt>Shift+Enter</dt><dd>New line in text</dd><dt>Alt+drag / Alt+arrows</dt><dd>Move text inside a shape</dd><dt>Shift+click</dt><dd>Add to selection</dd><dt>Click a selected shape again</dt><dd>Select what’s underneath it</dd><dt>Ctrl+C / V / D</dt><dd>Copy, paste at the pointer, duplicate</dd><dt>Ctrl+S</dt><dd>Save to My charts</dd><dt>Ctrl+Shift+S</dt><dd>Save as a file</dd><dt>Tab</dt><dd>Add a box under the selected one (structure diagrams)</dd><dt>Ctrl+Z / Shift+Z</dt><dd>Undo, redo</dd><dt>Arrows</dt><dd>Nudge (Shift = one grid step)</dd><dt>Space+drag</dt><dd>Pan</dd><dt>Ctrl+scroll</dt><dd>Zoom</dd><dt>Shift+1</dt><dd>Fit to screen</dd><dt>Shift+resize</dt><dd>Keep proportions</dd><dt>Drag the round handle</dt><dd>Rotate a shape (Shift = 15° steps, Alt = no settling on straight angles)</dd><dt>Drag an arrow's end</dt><dd>Re-attach it (structure diagrams: changes the hierarchy)</dd><dt>Alt+drag an arrow's end</dt><dd>New branch from that spot (structure diagrams)</dd><dt>Resize with several selected</dt><dd>Resizes them all by the same amount</dd><dt>Alt+resize</dt><dd>Ignore grid</dd><dt>Right-click</dt><dd>Actions menu, Clean up</dd><dt>Right-drag</dt><dd>Pan</dd><dt>Shift+Clean up</dt><dd>Tidy without opening settings</dd></dl>`));
 }
 function renderInspector(){
   const ns=selNodes(),es=selEdges();
@@ -1602,6 +1657,7 @@ function apply(t,p,v){
     if(p==='type'&&o.type!==v){const d=SHAPES[v];o.type=v;if(d.style)Object.assign(o.style,d.style)}
     else setP(o,p,v);
   }
+  if(t==='node'&&p==='rot')for(const o of T){o.rot=normRot(o.rot);if(!o.rot)delete o.rot}
   if(t==='node'&&p.startsWith('style.'))targets(t).forEach(remember);
   if(t==='edge'&&(p.startsWith('style.')||p.startsWith('label.style.')))targets(t).forEach(rememberEdge);
   if(p==='type')renderInspector();
@@ -1654,6 +1710,7 @@ insp.addEventListener('click',ev=>{
   if(a==='eMemForget'){delete doc.defaults.edgeMem;commit();renderInspector();toast('New arrows will start with the default look');return}
   if(a==='memForget'){forget([...new Set(ns.map(n=>n.type))]);commit();renderInspector();toast('New shapes of this type will start with the default look');return}
   else if(a==='fitText'){ns.forEach(fitText)}
+  else if(a.startsWith('rot-')){rotateBy(ns,a==='rot-cw'?90:a==='rot-ccw'?-90:null)}
   else if(a==='textCentre'){ns.forEach(n=>{n.tx=0;n.ty=0})}
   else if(a==='front'){doc.nodes=[...doc.nodes.filter(n=>!sel.has(n.id)),...ns]}
   else if(a==='back'){doc.nodes=[...ns,...doc.nodes.filter(n=>!sel.has(n.id))]}
@@ -1675,7 +1732,7 @@ insp.addEventListener('click',ev=>{
   else if(a==='invert'){invertDoc();renderInspector();toast('Diagram colours inverted. Undo to switch back.')}
   else if(a==='reverse'){es.forEach(e=>{[e.from,e.to]=[e.to,e.from];e.label.t=1-(e.label.t??.5)})}
   else if(a==='labelReset'){es.forEach(e=>{e.label.dx=0;e.label.dy=0;e.label.t=.5})}
-  else if(a.startsWith('al-')){const b2=selectionBounds(ns),k=a.slice(3);for(const n of ns){if(k==='left')n.x=b2.x0;if(k==='right')n.x=b2.x1-n.w;if(k==='center')n.x=(b2.x0+b2.x1)/2-n.w/2;if(k==='top')n.y=b2.y0;if(k==='bottom')n.y=b2.y1-n.h;if(k==='middle')n.y=(b2.y0+b2.y1)/2-n.h/2}}
+  else if(a.startsWith('al-')){const b2=selectionBounds(ns),k=a.slice(3);for(const n of ns){const B=nodeBox(n);if(k==='left')n.x+=b2.x0-B.x;if(k==='right')n.x+=b2.x1-B.x-B.w;if(k==='center')n.x+=(b2.x0+b2.x1)/2-B.x-B.w/2;if(k==='top')n.y+=b2.y0-B.y;if(k==='bottom')n.y+=b2.y1-B.y-B.h;if(k==='middle')n.y+=(b2.y0+b2.y1)/2-B.y-B.h/2}}
   else if(a==='dist-h'||a==='dist-v'){const H=a==='dist-h',s=[...ns].sort((p,q)=>H?(p.x+p.w/2)-(q.x+q.w/2):(p.y+p.h/2)-(q.y+q.h/2));const c0=H?s[0].x+s[0].w/2:s[0].y+s[0].h/2,c1=H?s[s.length-1].x+s[s.length-1].w/2:s[s.length-1].y+s[s.length-1].h/2;s.forEach((n,i)=>{const c=c0+(c1-c0)*i/(s.length-1);if(H)n.x=c-n.w/2;else n.y=c-n.h/2})}
   commit();render();syncInspector();
 });
@@ -2201,7 +2258,9 @@ function openCtx(cx,cy,t){
     I('Cut',()=>{if(copySel())deleteSel()},{kbd:MOD+'X'});I('Copy',()=>{if(copySel())toast('Copied')},{kbd:MOD+'C'});
     I('Duplicate',()=>{if(copySel())paste(gsz())},{kbd:MOD+'D'});I('Delete',deleteSel,{kbd:'Del',cls:'danger'});
     sep();
-    if(ns.length){I('Bring to front',()=>{doc.nodes=[...doc.nodes.filter(n=>!sel.has(n.id)),...ns];ch()});I('Send to back',()=>{doc.nodes=[...ns,...doc.nodes.filter(n=>!sel.has(n.id))];ch()});
+    if(ns.length){I('Rotate 90° clockwise',()=>{rotateBy(ns,90);ch()});I('Rotate 90° anticlockwise',()=>{rotateBy(ns,-90);ch()});
+      if(ns.some(n=>n.rot))I('Make upright',()=>{rotateBy(ns,null);ch()});sep();
+      I('Bring to front',()=>{doc.nodes=[...doc.nodes.filter(n=>!sel.has(n.id)),...ns];ch()});I('Send to back',()=>{doc.nodes=[...ns,...doc.nodes.filter(n=>!sel.has(n.id))];ch()});
       I('Copy style',()=>{copyStyle(ns,[]);toast('Shape style copied')});I('Paste style',()=>{pasteStyle(ns,[]);ch()},{dis:!styleClip.node})}
     else{I('Swap direction',()=>{es.forEach(e=>{[e.from,e.to]=[e.to,e.from];e.label.t=1-(e.label.t??.5)});ch()});
       I('Copy style',()=>{copyStyle([],es);toast('Arrow style copied')});I('Paste style',()=>{pasteStyle([],es);ch()},{dis:!styleClip.edge})}
@@ -2244,7 +2303,7 @@ function ctxKey(ev){const bs=[...ctxEl.querySelectorAll('button:not(:disabled)')
 /* clicking anywhere else closes the menu, and keeps a clean-up preview */
 /* clicking away applies a clean-up preview, but panning or zooming to look at it doesn't */
 const cuLook=ev=>{const t=ev.target;if(t.closest('.zoombar'))return true;if(!svg.contains(t))return false;
-  return ev.button===1||ev.button===2||spaceDown||(ev.pointerType==='touch'&&!t.closest('[data-node],[data-edge],[data-label],[data-handle],[data-port],[data-endpoint]'))};
+  return ev.button===1||ev.button===2||spaceDown||(ev.pointerType==='touch'&&!t.closest('[data-node],[data-edge],[data-label],[data-handle],[data-rot],[data-port],[data-endpoint]'))};
 document.addEventListener('pointerdown',ev=>{if(!ctxEl.hidden&&!ctxEl.contains(ev.target))closeCtx();if(cu&&!cuEl.contains(ev.target)&&!ctxEl.contains(ev.target)&&!cuLook(ev))cuApply()},true);
 window.addEventListener('blur',closeCtx);window.addEventListener('resize',closeCtx);
 
@@ -2398,7 +2457,7 @@ function drawScene(ctx,items,scale){
     ctx.setLineDash(dashArr(st.dash,st.width)||[]);ctx.stroke(new Path2D(g.d));ctx.setLineDash([]);
     for(const h of g.heads){const P=new Path2D(h.d);if(h.m==='fill'){ctx.fill(P);ctx.lineWidth=Math.min(st.width,1.5);ctx.stroke(P);ctx.lineWidth=st.width}else{if(h.m==='bg'){ctx.fillStyle=doc.canvas.bg;ctx.fill(P);ctx.fillStyle=st.stroke}ctx.stroke(P)}}
     ctx.restore()}
-  for(const n of items.nodes){const st=n.style,def=SHAPES[n.type],P=new Path2D(def.path(n.w,n.h,st));ctx.save();ctx.translate(n.x,n.y);
+  for(const n of items.nodes){const st=n.style,def=SHAPES[n.type],P=new Path2D(def.path(n.w,n.h,st));ctx.save();ctx.translate(n.x,n.y);if(n.rot){ctx.translate(n.w/2,n.h/2);ctx.rotate(n.rot*Math.PI/180);ctx.translate(-n.w/2,-n.h/2)}
     const sh=()=>{ctx.shadowColor='rgba(15,23,42,.22)';ctx.shadowBlur=8*scale;ctx.shadowOffsetY=3*scale};const nosh=()=>{ctx.shadowColor='transparent';ctx.shadowBlur=0;ctx.shadowOffsetY=0};
     if(st.shadow&&st.fillOpacity>0)sh();
     if(st.fillOpacity>0){ctx.globalAlpha=st.fillOpacity;ctx.fillStyle=st.fill;ctx.fill(P)}
@@ -2476,13 +2535,13 @@ $('#exCopy').onclick=async()=>{if(!ex.blob||ex.fmt!=='png')return;const blob=ex.
    Shown once on a first visit, and from Canvas → Help any time. KEEP THIS IN STEP WITH THE APP:
    when a feature is added or changed, update (or add) its step here and bump TOUR_V so people
    who saw an older tour get the new one. */
-const TOUR_V=7;
+const TOUR_V=8;
 const tI=(d,extra='')=>`<svg viewBox="0 0 200 110" width="200" height="110" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
 const TOUR=[
   {t:'Welcome to Linework',art:tI('<rect x="70" y="8" width="60" height="22" rx="11"/><path d="M100 30v14"/><path d="M100 44l22 14-22 14-22-14z"/><path d="M100 72v14M122 58h30"/><rect x="72" y="86" width="56" height="18" rx="3"/><rect x="152" y="48" width="40" height="20" rx="3"/>'),
    b:`<p>Make clean flowcharts that drop straight into Word. This quick tour covers everything; it takes about a minute.</p><p class="muted">You can reopen it any time from <b>Canvas → Help</b>.</p>`},
   {t:'Add shapes',at:'#rail',art:tI('<rect x="10" y="10" width="44" height="90" rx="6"/><rect x="18" y="20" width="28" height="12" rx="2"/><rect x="18" y="40" width="28" height="12" rx="6"/><path d="M32 60l10 7-10 7-10-7z"/><path d="M60 50h40" stroke-dasharray="4 5"/><path d="M95 44l8 6-8 6"/><rect x="112" y="36" width="70" height="30" rx="4"/>'),
-   b:`<ul><li><b>Click</b> a shape on the left to add it, or <b>drag</b> it onto the canvas.</li><li>Shapes are grouped by type, and the ones you use most appear under <b>Recent</b>.</li><li><b>Double-click</b> empty canvas to drop a box right there.</li><li>Drag the white squares on a selected shape to resize it.</li></ul>`},
+   b:`<ul><li><b>Click</b> a shape on the left to add it, or <b>drag</b> it onto the canvas.</li><li>Shapes are grouped by type, and the ones you use most appear under <b>Recent</b>.</li><li><b>Double-click</b> empty canvas to drop a box right there.</li><li>Drag the white squares on a selected shape to resize it, and the <b>round handle</b> above it to rotate it (hold <b>Shift</b> for 15° steps). Right-click a shape to turn it 90°.</li></ul>`},
   {t:'Connect with arrows',at:'node',art:tI('<rect x="14" y="36" width="60" height="34" rx="4"/><circle cx="74" cy="53" r="5" fill="currentColor"/><path d="M80 53h52"/><path d="M128 47l9 6-9 6" fill="currentColor"/><rect x="138" y="36" width="50" height="34" rx="4"/>'),
    b:`<ul><li><b>Hover</b> a shape (like the highlighted one) to show its blue dots, then drag a dot onto another shape.</li><li>Arrows have dots too: drop an arrow onto another arrow to join it, or drag from an arrow's dot to branch off it. Joined arrows stay together when you move things or clean up.</li><li>An arrow can also end in empty space.</li><li><b>Double-click</b> an arrow to give it a label, such as Yes or No. Labels start centred on the line; drag them along it.</li><li>In the arrow's <b>Style</b> tab choose elbow, straight or curved, plus arrowheads and line style.</li></ul>`},
   {t:'Flowchart or structure diagram',at:'#insp',art:tI('<rect x="76" y="8" width="48" height="22" rx="3"/><path d="M100 30v14M40 44h120M40 44v14M100 44v14M160 44v14"/><rect x="16" y="58" width="48" height="22" rx="3"/><rect x="76" y="58" width="48" height="22" rx="3"/><rect x="136" y="58" width="48" height="22" rx="3"/><path d="M40 80v10M28 90h24M28 90v6M52 90v6"/>'),
