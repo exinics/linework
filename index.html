@@ -580,11 +580,13 @@ const fitCache=new Map();
 function autoFs(text,st,bw,bh){
   const key=[text,st.fontFamily,st.bold,st.italic,st.lineHeight,bw,bh].join('|');let v=fitCache.get(key);if(v)return v;
   const words=String(text||'').split(/\s+/).filter(Boolean);
-  const fits=fs=>{const s2={...st,fontSize:fs};mctx.font=fontOf(s2);if(words.some(w=>mctx.measureText(w).width>bw+.01))return false;/* never split a word across lines */
+  const fits=fs=>{const s2={...st,fontSize:fs};mctx.font=fontOf(s2);if(words.some(w=>mctx.measureText(w).width>bw))return false;/* never split a word across lines (same test wrap() uses, so a word that passes here is never broken there) */
     const L=layoutText(text,s2,0,0,bw,bh);return L.H<=bh+.01&&L.lines.every(l=>l.w<=bw+.01)};
   let lo=1,hi=Math.max(2,Math.min(400,bh/(st.lineHeight||1.3)));
   if(!String(text||'').trim())v=Math.min(st.fontSize,hi);
-  else{while(hi-lo>.5){const m=(lo+hi)/2;if(fits(m))lo=m;else hi=m}v=Math.max(1,Math.floor(lo*2)/2)}
+  else{while(hi-lo>.5){const m=(lo+hi)/2;if(fits(m))lo=m;else hi=m}v=Math.max(1,Math.floor(lo*2)/2);
+    /* the rounded size was never tested itself, and text width isn't strictly smooth in size on every system (glyph advances snap on macOS), so check it and step down */
+    while(v>1&&!fits(v))v-=.5}
   if(fitCache.size>2000)fitCache.clear();fitCache.set(key,v);return v;
 }
 
@@ -742,7 +744,7 @@ function labelFs(text,st,pts,t,head){
   const ends=(i0===1)+(i0===pts.length-1),run=Math.max(8,Math.hypot(b.x-a.x,b.y-a.y)-ends*(head+4)-8),across=Math.abs(b.x-a.x)>=Math.abs(b.y-a.y);
   const key=['L',text,st.fontFamily,st.bold,st.italic,st.pad,run,across].join('|');let v=fitCache.get(key);if(v)return v;
   const fits=fs=>{const L=layoutText(text,{...st,fontSize:fs},0,0,0,0,true);return across?Math.max(...L.lines.map(l=>l.w))+st.pad*2<=run:L.H+st.pad<=run};
-  let lo=4,hi=144;if(!fits(lo))v=lo;else{while(hi-lo>.5){const m=(lo+hi)/2;if(fits(m))lo=m;else hi=m}v=Math.floor(lo*2)/2}
+  let lo=4,hi=144;if(!fits(lo))v=lo;else{while(hi-lo>.5){const m=(lo+hi)/2;if(fits(m))lo=m;else hi=m}v=Math.floor(lo*2)/2;while(v>4&&!fits(v))v-=.5}
   if(fitCache.size>2000)fitCache.clear();fitCache.set(key,v);return v;
 }
 
@@ -2556,7 +2558,8 @@ tourM.addEventListener('keydown',ev=>{ev.stopPropagation();
   doc=saved&&saved.doc&&saved.doc.nodes?normalize(saved.doc):sampleDoc();
   lastSnap=JSON.stringify(doc);updUndo();renderInspector();
   requestAnimationFrame(()=>{if(saved&&saved.view&&isFinite(saved.view.z))view=saved.view,render();else fit()});
-  if(document.fonts){document.fonts.addEventListener('loadingdone',()=>{wrapCache.clear();capCache.clear();render()});document.fonts.ready.then(()=>{wrapCache.clear();capCache.clear();render()})}
+  if(document.fonts){const fontsIn=()=>{wrapCache.clear();capCache.clear();fitCache.clear();render()};/* auto-sizes worked out with a stand-in font must be redone once the real one arrives */
+    document.fonts.addEventListener('loadingdone',fontsIn);document.fonts.ready.then(fontsIn)}
   window.addEventListener('resize',render);
   setTimeout(getDownloads,0);
 })();
